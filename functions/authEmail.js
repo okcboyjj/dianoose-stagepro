@@ -3,8 +3,8 @@ const admin = require("firebase-admin");
 
 const APP_NAME = "Dianoose Stage";
 const SENDER = `${APP_NAME} <noreply@dianoosestage.com>`;
-const CONTINUE_URL = "https://dianoosestage.netlify.app/";
-const RESET_CONTINUE_URL = "https://dianoosestage.netlify.app/reset-password";
+const CONTINUE_URL = "https://dianoosestage.com/";
+const RESET_CONTINUE_URL = "https://dianoosestage.com/reset-password";
 
 function buildEmailHtml({ heading, bodyText, link, buttonLabel }) {
   return `
