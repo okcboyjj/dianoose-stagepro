@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { base44 } from "@/api/base44Client";
 import { Button } from "@/components/ui/button";
 import { Music, Search, Plus, Loader2, Check, Filter, Youtube, ExternalLink, Clock, Tag, ShieldCheck, Play, AlertCircle } from "lucide-react";
+import { SCROLL_FADE_STYLE } from "@/lib/utils";
 
 import { motion, AnimatePresence } from "framer-motion";
 const AP = AnimatePresence;
@@ -52,8 +53,7 @@ const SORT_OPTIONS = [
   { id: "title", label: "A–Z" },
   { id: "artist", label: "Artist" },
   { id: "key", label: "Key" },
-  { id: "bpm_asc", label: "BPM ↑" },
-  { id: "bpm_desc", label: "BPM ↓" },
+  { id: "bpm", label: "BPM" },
   { id: "verified", label: "Verified" },
   { id: "newest", label: "Newest" },
 ];
@@ -546,7 +546,7 @@ export default function GlobalSongLibrary({ churchId, churchSongs, onSongCloned 
       </div>
 
       {/* Language filter chips */}
-      <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+      <div className="flex gap-1.5 overflow-x-auto pb-1 pr-4 scrollbar-hide" style={SCROLL_FADE_STYLE}>
         {LANG_FILTER_OPTIONS.map(l => (
           <button key={l.id} onClick={() => setLangFilter(l.id)}
             className={`px-3 py-1.5 rounded-xl text-[11px] font-bold whitespace-nowrap transition-all border ${
@@ -562,13 +562,18 @@ export default function GlobalSongLibrary({ churchId, churchSongs, onSongCloned 
       </div>
 
       {/* Sort pills */}
-      <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
-        {SORT_OPTIONS.map(s => (
-          <button key={s.id} onClick={() => setSortBy(s.id)}
-            className={`px-3 py-1.5 rounded-xl text-[11px] font-bold whitespace-nowrap transition-all border ${sortBy === s.id ? "bg-primary text-primary-foreground border-primary shadow-md" : "bg-card border-border/40 text-muted-foreground hover:text-foreground"}`}>
-            {s.label}
-          </button>
-        ))}
+      <div className="flex gap-1">
+        {SORT_OPTIONS.map(s => {
+          const isBpm = s.id === "bpm";
+          const active = isBpm ? sortBy.startsWith("bpm") : sortBy === s.id;
+          const label = isBpm ? (sortBy === "bpm_desc" ? "BPM↓" : "BPM↑") : s.label;
+          return (
+            <button key={s.id} onClick={() => setSortBy(isBpm ? (sortBy === "bpm_asc" ? "bpm_desc" : "bpm_asc") : s.id)}
+              className={`flex-1 min-w-0 px-1 py-1.5 rounded-lg text-[9px] font-bold whitespace-nowrap overflow-hidden text-ellipsis transition-all border ${active ? "bg-primary text-primary-foreground border-primary shadow-md" : "bg-card border-border/40 text-muted-foreground hover:text-foreground"}`}>
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Filter panel */}

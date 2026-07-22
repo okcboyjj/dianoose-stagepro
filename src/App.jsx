@@ -8,6 +8,7 @@ import Layout from './components/Layout';
 
 const Home = lazy(() => import('./pages/Home'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
         }>
           <Routes>
             <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/privacy" element={<PrivacyPolicy />} />
             <Route element={<Layout />}>
               <Route path="/" element={<Home />} />
               <Route path="/dashboard" element={<Home />} />

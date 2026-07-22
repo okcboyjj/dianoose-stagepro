@@ -25,11 +25,16 @@ const GlobalStyles = () => (
       backdrop-filter: blur(12px);
       border: 1px solid hsl(var(--border) / 0.5);
     }
+    .auth-screen {
+      min-height: 100dvh;
+      padding-top: max(env(safe-area-inset-top, 0px), 1.5rem);
+      padding-bottom: max(env(safe-area-inset-bottom, 0px), 1.5rem);
+    }
   `}</style>
 );
 
 export default function ResetPassword() {
-  const [token, setToken] = useState(null);
+  const [oobCode, setOobCode] = useState(null);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -38,13 +43,13 @@ export default function ResetPassword() {
   const [success, setSuccess] = useState(false);
 
   useEffect(() => {
-    // Base44 sends reset links with ?token= query param
+    // Firebase sends reset links with ?oobCode= (plus mode=resetPassword)
     const params = new URLSearchParams(window.location.search);
-    const t = params.get("token") || params.get("reset_token") || params.get("resetToken");
-    if (!t) {
+    const code = params.get("oobCode");
+    if (!code) {
       setError("No reset token found in this link. Please request a new password reset email.");
     } else {
-      setToken(t);
+      setOobCode(code);
     }
   }, []);
 
@@ -56,7 +61,7 @@ export default function ResetPassword() {
 
     setLoading(true);
     try {
-      await base44.auth.resetPassword({ resetToken: token, newPassword: password });
+      await base44.auth.resetPassword({ oobCode, newPassword: password });
       setSuccess(true);
       // After 2.5s redirect back to the app root
       setTimeout(() => {
@@ -77,7 +82,7 @@ export default function ResetPassword() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
+    <div className="auth-screen bg-background flex items-center justify-center relative overflow-hidden">
       <GlobalStyles />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-primary/15 via-background to-background" />
       <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] bg-primary/20 rounded-full blur-[120px] pointer-events-none mix-blend-screen" style={{ animation: 'floatA 12s ease-in-out infinite' }} />
@@ -120,7 +125,7 @@ export default function ResetPassword() {
             </motion.div>
           ) : (
             <div className="space-y-4">
-              {!token ? (
+              {!oobCode ? (
                 <div className="text-center">
                   <p className="text-xs text-muted-foreground mt-2">
                     <button onClick={() => window.location.href = "/"} className="text-primary font-semibold hover:underline">← Back to Sign In</button>

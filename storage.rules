@@ -1,0 +1,20 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Church-scoping via a cross-service Firestore lookup (firestore.get()) proved unreliable
+    // here, so — matching the same pragmatic call made for churches/serviceAssignments in
+    // firestore.rules — gate on "signed in" rather than exact church membership. The actual
+    // chart data lives in Firestore and is properly church-scoped there; these are just the
+    // source photos/logos.
+    match /uploads/{churchId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.resource.size < 20 * 1024 * 1024;
+    }
+  }
+}

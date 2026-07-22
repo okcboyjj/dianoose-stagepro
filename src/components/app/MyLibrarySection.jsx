@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Star, X, Loader2, Music, Search, Plus, Trash2, Save } from "lucide-react";
+import { SCROLL_FADE_STYLE } from "@/lib/utils";
 
 const MyLibrarySongEntity = base44.entities.MyLibrarySong;
 
@@ -182,7 +183,7 @@ export default function MyLibrarySection({ songs, myLibrary, user, church, onRef
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search my library..." className="bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none flex-1 font-medium" />
       </div>
 
-      <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+      <div className="flex gap-1.5 overflow-x-auto pb-1 pr-4 scrollbar-hide" style={SCROLL_FADE_STYLE}>
         {[{ id: "newest", label: "Newest" }, { id: "alpha", label: "A–Z" }, { id: "artist", label: "Artist" }, { id: "key", label: "Key" }, { id: "bpm", label: "BPM" }, { id: "rating", label: "Rating" }, { id: "favorites", label: "⭐ Fav" }].map(s => (
           <button key={s.id} onClick={() => setSortBy(s.id)} className={`px-3 py-1.5 rounded-xl text-[11px] font-bold whitespace-nowrap transition-all border ${sortBy === s.id ? "bg-primary text-primary-foreground border-primary shadow-md" : "bg-card border-border/40 text-muted-foreground hover:text-foreground"}`}>
             {s.label}

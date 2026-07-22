@@ -255,9 +255,12 @@ export default function MessageCenter({ church, user, services, members }) {
     if (!activeChannel?.id) return;
     loadMessages(activeChannel.id);
 
-    // Real-time subscription
+    // Real-time subscription — Firestore listeners require an explicit filter, so we scope
+    // to every channel in the church (not just the active one) to keep unread badges working.
     if (unsubRef.current) unsubRef.current();
-    unsubRef.current = MessageEntity.subscribe((event) => {
+    const channelIds = channels.map(c => c.id);
+    if (channelIds.length === 0) return;
+    unsubRef.current = MessageEntity.subscribe({ channel_id: { in: channelIds } }, (event) => {
       if (event.data?.channel_id !== activeChannel.id) {
         // Unread for other channel
         setUnreadMap(prev => ({ ...prev, [event.data?.channel_id]: (prev[event.data?.channel_id] || 0) + 1 }));
@@ -272,7 +275,7 @@ export default function MessageCenter({ church, user, services, members }) {
       }
     });
     return () => { if (unsubRef.current) unsubRef.current(); };
-  }, [activeChannel?.id, loadMessages]);
+  }, [activeChannel?.id, loadMessages, channels]);
 
   useEffect(() => {
     const el = messagesContainerRef.current;

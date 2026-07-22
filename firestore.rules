@@ -1,0 +1,116 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // churchMembers/{uid} — one membership doc per user, doc ID == auth uid.
+    function memberDoc(uid) {
+      return get(/databases/$(database)/documents/churchMembers/$(uid));
+    }
+
+    function myChurchId() {
+      return memberDoc(request.auth.uid).data.church_id;
+    }
+
+    function isMemberOf(churchId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/churchMembers/$(request.auth.uid))
+        && myChurchId() == churchId;
+    }
+
+    function isChurchAdmin(churchId) {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/churches/$(churchId)).data.admin_user_id == request.auth.uid;
+    }
+
+    function channelChurchId(channelId) {
+      return get(/databases/$(database)/documents/channels/$(channelId)).data.church_id;
+    }
+
+    match /churches/{churchId} {
+      // Joining-by-team-code and admin self-repair both query churches before the reader has
+      // a churchMembers doc yet, so read access can't be gated on existing membership.
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.admin_user_id == request.auth.uid;
+      allow update, delete: if isChurchAdmin(churchId);
+    }
+
+    // One membership doc per user; doc ID must equal the user's own uid.
+    match /churchMembers/{memberId} {
+      allow read: if isSignedIn() && (memberId == request.auth.uid || isMemberOf(resource.data.church_id));
+      allow create: if isSignedIn()
+        && memberId == request.auth.uid
+        && request.resource.data.user_id == request.auth.uid
+        && exists(/databases/$(database)/documents/churches/$(request.resource.data.church_id));
+      allow update: if isSignedIn()
+        && (memberId == request.auth.uid || isChurchAdmin(resource.data.church_id));
+      allow delete: if isChurchAdmin(resource.data.church_id);
+    }
+
+    match /teamInvites/{inviteId} {
+      allow read, create, update: if isMemberOf(request.resource.data.church_id)
+        || (resource != null && isMemberOf(resource.data.church_id));
+      allow delete: if isChurchAdmin(resource.data.church_id);
+    }
+
+    match /songs/{songId} {
+      allow read: if isMemberOf(resource.data.church_id);
+      allow create: if isMemberOf(request.resource.data.church_id);
+      allow update, delete: if isMemberOf(resource.data.church_id);
+    }
+
+    match /services/{serviceId} {
+      allow read: if isMemberOf(resource.data.church_id);
+      allow create: if isMemberOf(request.resource.data.church_id);
+      allow update, delete: if isMemberOf(resource.data.church_id);
+    }
+
+    match /serviceAssignments/{assignmentId} {
+      // Queried by user_id or service_id (not church_id) in the app, so reads can't be gated
+      // on a church_id check the query never filters by — see churchId note above.
+      allow read: if isSignedIn();
+      allow create: if isMemberOf(request.resource.data.church_id);
+      allow update: if isMemberOf(resource.data.church_id);
+      allow delete: if isChurchAdmin(resource.data.church_id);
+    }
+
+    match /channels/{channelId} {
+      allow read: if isMemberOf(resource.data.church_id);
+      allow create: if isMemberOf(request.resource.data.church_id);
+      allow update: if isMemberOf(resource.data.church_id);
+      allow delete: if isChurchAdmin(resource.data.church_id);
+    }
+
+    match /messages/{messageId} {
+      // Queries filter by channel_id (not church_id), so the read rule must key off the same
+      // field Firestore sees in the query — otherwise Firestore can't verify the list is safe.
+      allow read: if isMemberOf(channelChurchId(resource.data.channel_id));
+      allow create: if isMemberOf(request.resource.data.church_id)
+        && request.resource.data.sender_id == request.auth.uid;
+      allow update: if isMemberOf(resource.data.church_id);
+      allow delete: if isChurchAdmin(resource.data.church_id)
+        || (isSignedIn() && resource.data.sender_id == request.auth.uid);
+    }
+
+    // Personal, not church-shared — gated by owning user, not membership.
+    match /myLibrarySongs/{entryId} {
+      allow read, update, delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
+    }
+
+    match /notifications/{notificationId} {
+      allow read, update, delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if false; // only written by Cloud Functions via Admin SDK
+    }
+
+    // Shared read-only catalog; writes only via Cloud Functions (Admin SDK bypasses rules).
+    match /globalSongs/{songId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+  }
+}

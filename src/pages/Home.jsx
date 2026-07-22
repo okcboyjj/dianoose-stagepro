@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense, Component } from "react";
 import { applyChurchTheme } from "@/lib/applyTheme.js";
+import { SCROLL_FADE_STYLE } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { base44 } from "@/api/base44Client";
 import { useNavigate, useLocation } from "react-router-dom";
@@ -31,6 +32,33 @@ const ChurchMemberEntity = base44.entities.ChurchMember;
 const ChurchEntity = base44.entities.Church;
 const MyLibrarySongEntity = base44.entities.MyLibrarySong;
 const NotificationEntity = base44.entities.Notification;
+
+// Recovers accounts left orphaned by an interrupted signup (Auth user created, but the
+// church/member Firestore docs never got written — e.g. the app crashed or hung mid-setup).
+// Without this, retrying "New Church" with the same email always fails with "already exists",
+// and there's no way back in since no church means nothing for Sign In's "no_church" path to find.
+async function registerOrRecoverOrphanedAccount(email, password) {
+  try {
+    return await base44.auth.register({ email, password });
+  } catch (registerErr) {
+    const msg = (registerErr?.message || "").toLowerCase();
+    const alreadyExists = msg.includes("already") || msg.includes("exists") || msg.includes("registered") || msg.includes("duplicate") || msg.includes("taken");
+    if (!alreadyExists) throw registerErr;
+
+    let loginResult;
+    try {
+      loginResult = await base44.auth.loginViaEmailPassword(email, password);
+    } catch {
+      throw new Error("An account with this email already exists, but that password doesn't match it. Please go back and sign in instead.");
+    }
+
+    const existingMembers = await ChurchMemberEntity.filter({ user_id: loginResult.user.id });
+    if (existingMembers.length > 0) {
+      throw new Error("This account is already set up with a church. Please go back and sign in instead.");
+    }
+    return loginResult;
+  }
+}
 
 class CatalogErrorBoundary extends Component {
   state = { hasError: false };
@@ -101,6 +129,11 @@ const GlobalStyles = () => (
     .mobile-header {
       padding-top: env(safe-area-inset-top, 0px);
     }
+    .auth-screen {
+      min-height: 100dvh;
+      padding-top: max(env(safe-area-inset-top, 0px), 1.5rem);
+      padding-bottom: max(env(safe-area-inset-bottom, 0px), 1.5rem);
+    }
     @keyframes ptr-spin {
       to { transform: rotate(360deg); }
     }
@@ -148,9 +181,10 @@ function PullToRefresh({ onRefresh, children, isMessages }) {
   const startY = useRef(null);
   const [pulling, setPulling] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   const threshold = 72;
 
-  const onTouchStart = (e) => { startY.current = e.touches[0].clientY; };
+  const onTouchStart = (e) => { if (!refreshing) startY.current = e.touches[0].clientY; };
   const onTouchMove = (e) => {
     if (startY.current === null) return;
     const el = e.currentTarget;
@@ -161,12 +195,24 @@ function PullToRefresh({ onRefresh, children, isMessages }) {
       setPulling(dy > 10);
     }
   };
-  const onTouchEnd = () => {
-    if (progress >= 1) onRefresh();
+  const onTouchEnd = async () => {
+    const shouldRefresh = progress >= 1;
     setPulling(false);
-    setProgress(0);
     startY.current = null;
+    if (shouldRefresh) {
+      setRefreshing(true);
+      try {
+        await onRefresh();
+      } finally {
+        setRefreshing(false);
+        setProgress(0);
+      }
+    } else {
+      setProgress(0);
+    }
   };
+
+  const showIndicator = pulling || refreshing;
 
   return (
     <div
@@ -175,17 +221,104 @@ function PullToRefresh({ onRefresh, children, isMessages }) {
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
     >
-      {pulling && (
+      {showIndicator && (
         <div className="absolute top-0 left-0 right-0 flex justify-center pt-2 z-10 pointer-events-none">
           <div
             className="w-8 h-8 rounded-full bg-primary/20 border border-primary/40 flex items-center justify-center"
-            style={{ opacity: progress, transform: `scale(${0.5 + progress * 0.5})` }}
+            style={{ opacity: refreshing ? 1 : progress, transform: `scale(${refreshing ? 1 : 0.5 + progress * 0.5})` }}
           >
-            <RefreshCw className="w-4 h-4 text-primary" style={{ animation: progress >= 1 ? 'ptr-spin 0.6s linear infinite' : 'none', transform: `rotate(${progress * 360}deg)` }} />
+            <RefreshCw className="w-4 h-4 text-primary" style={{ animation: (refreshing || progress >= 1) ? 'ptr-spin 0.6s linear infinite' : 'none', transform: refreshing ? 'none' : `rotate(${progress * 360}deg)` }} />
           </div>
         </div>
       )}
       {children}
+    </div>
+  );
+}
+
+// ─── Notification Bell (mini dropdown, not a page navigation) ────────────────
+function NotificationBell({ notifications, onMarkRead, onViewAll, mobile }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+  const unreadCount = notifications.filter(n => !n.is_read).length;
+  const recent = [...notifications]
+    .sort((a, b) => (b.created_date || "").localeCompare(a.created_date || ""))
+    .slice(0, 6);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickOutside = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("touchstart", onClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("touchstart", onClickOutside);
+    };
+  }, [open]);
+
+  const buttonClass = mobile
+    ? "min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-muted-foreground active:bg-secondary transition-colors relative"
+    : "w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors relative";
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button onClick={() => setOpen(o => !o)} aria-label="View notifications" className={buttonClass}>
+        <Bell className="w-4 h-4" />
+        {unreadCount > 0 && <span className={`absolute ${mobile ? "top-2.5 right-2.5" : "top-2 right-2.5"} w-2 h-2 rounded-full bg-primary animate-pulse`} />}
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -8, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.97 }}
+            transition={{ duration: 0.15 }}
+            className="absolute right-0 top-full mt-2 w-80 max-w-[90vw] glass-panel rounded-2xl shadow-2xl shadow-black/40 z-50 overflow-hidden"
+          >
+            <div className="px-4 py-3 border-b border-border/30 flex items-center justify-between">
+              <p className="text-sm font-bold text-foreground">Notifications</p>
+              {unreadCount > 0 && <span className="text-[10px] font-bold text-primary bg-primary/10 rounded-full px-2 py-0.5">{unreadCount} new</span>}
+            </div>
+
+            <div className="max-h-80 overflow-y-auto">
+              {recent.length === 0 ? (
+                <div className="py-10 text-center">
+                  <Bell className="w-6 h-6 text-muted-foreground opacity-40 mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">No notifications yet.</p>
+                </div>
+              ) : (
+                recent.map(n => (
+                  <button
+                    key={n.id}
+                    onClick={() => onMarkRead(n)}
+                    className={`w-full text-left px-4 py-3 border-b border-border/20 last:border-0 hover:bg-secondary/40 transition-colors flex items-start gap-3 ${!n.is_read ? "bg-primary/5" : ""}`}
+                  >
+                    <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${!n.is_read ? "bg-primary shadow-md shadow-primary/50" : "bg-muted"}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-xs leading-snug ${!n.is_read ? "font-semibold text-foreground" : "font-medium text-muted-foreground"}`}>{n.message}</p>
+                      {n.created_date && (
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          {new Date(n.created_date).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+
+            <button
+              onClick={() => { setOpen(false); onViewAll(); }}
+              className="w-full text-center py-2.5 text-xs font-semibold text-primary hover:bg-primary/5 transition-colors"
+            >
+              View all notifications
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -196,6 +329,81 @@ let globalChurch = null;
 
 
 // ─── Login Screen ─────────────────────────────────────────────────────────────
+function VerifyEmailScreen({ email, onVerified, onSignOut }) {
+  const [checking, setChecking] = useState(false);
+  const [resent, setResent] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleCheck = async () => {
+    setError(""); setResent(false); setChecking(true);
+    try {
+      const verified = await base44.auth.checkEmailVerified();
+      if (verified) onVerified();
+      else setError("Still not verified — open the link in the email, then try again.");
+    } catch (e) {
+      setError("Couldn't check verification status. Please try again.");
+    } finally { setChecking(false); }
+  };
+
+  const handleResend = async () => {
+    setError(""); setChecking(true);
+    try {
+      await base44.auth.sendVerificationEmail();
+      setResent(true);
+    } catch (e) {
+      setError("Failed to resend. Please try again in a moment.");
+    } finally { setChecking(false); }
+  };
+
+  return (
+    <div className="auth-screen bg-background flex items-center justify-center relative overflow-hidden">
+      <GlobalStyles />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-primary/15 via-background to-background" />
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="w-full max-w-[420px] mx-4 relative z-10">
+        <div className="glass-panel rounded-2xl p-8 shadow-2xl shadow-black/40 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-primary flex items-center justify-center mx-auto mb-4 shadow-xl shadow-primary/20">
+            <Mail className="w-7 h-7 text-primary-foreground" />
+          </div>
+          <h1 className="text-xl font-bold text-foreground tracking-tight">Verify your email</h1>
+          <p className="text-xs text-muted-foreground mt-2 mb-6">
+            We sent a verification link to <span className="text-foreground font-semibold">{email}</span>. Open it, then come back here.
+          </p>
+
+          <AnimatePresence mode="wait">
+            {error && (
+              <motion.div key="err" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden mb-4">
+                <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2.5 text-left">
+                  <AlertCircle className="w-4 h-4 text-destructive shrink-0" />
+                  <p className="text-xs font-medium text-destructive">{error}</p>
+                </div>
+              </motion.div>
+            )}
+            {resent && !error && (
+              <motion.div key="ok" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden mb-4">
+                <div className="flex items-center gap-2 bg-primary/10 border border-primary/20 rounded-lg px-3 py-2.5 text-left">
+                  <Check className="w-4 h-4 text-primary shrink-0" />
+                  <p className="text-xs font-medium text-primary">Verification email resent — check your inbox (and spam).</p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <Button onClick={handleCheck} disabled={checking} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 h-11 rounded-xl font-semibold shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-[0.98] transition-all mb-3">
+            {checking ? <Loader2 className="w-5 h-5 animate-spin" /> : "I've Verified — Continue"}
+          </Button>
+          <button onClick={handleResend} disabled={checking} className="text-xs text-primary font-semibold hover:underline mb-4 block mx-auto">
+            Resend verification email
+          </button>
+          <p className="text-[11px] text-muted-foreground">
+            Wrong account?{" "}
+            <button onClick={onSignOut} className="text-primary font-semibold hover:underline">Sign out</button>
+          </p>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function LoginScreen({ onAuth }) {
   const urlParams = new URLSearchParams(window.location.search);
   const joinCodeFromUrl = urlParams.get("join") || "";
@@ -211,58 +419,94 @@ function LoginScreen({ onAuth }) {
   const [showSetup, setShowSetup] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
-  const [pendingVerification, setPendingVerification] = useState(null);
+  const [pendingVerifyUser, setPendingVerifyUser] = useState(null);
+
+  // Covers a leftover signed-in-but-unverified session landing back on this screen.
+  useEffect(() => {
+    (async () => {
+      try {
+        const user = await base44.auth.me();
+        if (user && !user.emailVerified) setPendingVerifyUser(user);
+      } catch {
+        // Not signed in — normal case, nothing to do.
+      }
+    })();
+  }, []);
+
+  const proceedOrVerify = (user) => {
+    if (!user.emailVerified) { setPendingVerifyUser(user); return; }
+    onAuth();
+  };
+
+  // Shared by email/password sign-in and Google/Apple sign-in — both land here with a Firebase user.
+  const resolveMemberAndEnter = async (user) => {
+    const members = await ChurchMemberEntity.filter({ user_id: user.id });
+
+    if (members.length > 0) {
+      const churches = await ChurchEntity.filter({ id: members[0].church_id });
+      globalUser = { ...user, ...members[0] };
+      globalChurch = churches[0] || null;
+      proceedOrVerify(user);
+      return;
+    }
+
+    // No member profile — check if they're a church admin (incomplete setup)
+    const adminChurches = await ChurchEntity.filter({ admin_user_id: user.id });
+    if (adminChurches.length > 0) {
+      const church = adminChurches[0];
+      const nameParts = (user.full_name || "").trim().split(" ");
+      const repairedMember = await ChurchMemberEntity.create({
+        first_name: nameParts[0] || "Admin",
+        last_name: nameParts.slice(1).join(" ") || "",
+        email: user.email,
+        role: "Admin",
+        church_id: church.id,
+        user_id: user.id,
+        is_active: true
+      });
+      globalUser = { ...user, ...repairedMember };
+      globalChurch = church;
+      proceedOrVerify(user);
+      return;
+    }
+
+    // Auth exists but no church at all — let them join or create one
+    throw new Error("no_church");
+  };
 
   const handleSignIn = async () => {
     setError(""); setLoading(true);
     try {
       const { user } = await base44.auth.loginViaEmailPassword(signInEmail.trim(), signInPassword);
       if (!user) throw new Error("bad_credentials");
-
-      const members = await ChurchMemberEntity.filter({ user_id: user.id });
-
-      if (members.length > 0) {
-        // Normal path
-        const churches = await ChurchEntity.filter({ id: members[0].church_id });
-        globalUser = { ...user, ...members[0] };
-        globalChurch = churches[0] || null;
-        onAuth();
-        return;
-      }
-
-      // No member profile — check if they're a church admin (incomplete setup)
-      const adminChurches = await ChurchEntity.filter({ admin_user_id: user.id });
-      if (adminChurches.length > 0) {
-        const church = adminChurches[0];
-        const nameParts = (user.full_name || "").trim().split(" ");
-        const repairedMember = await ChurchMemberEntity.create({
-          first_name: nameParts[0] || "Admin",
-          last_name: nameParts.slice(1).join(" ") || "",
-          email: user.email,
-          role: "Admin",
-          church_id: church.id,
-          user_id: user.id,
-          is_active: true
-        });
-        globalUser = { ...user, ...repairedMember };
-        globalChurch = church;
-        onAuth();
-        return;
-      }
-
-      // Auth exists but no church at all — let them join or create one
-      throw new Error("no_church");
+      await resolveMemberAndEnter(user);
     } catch (e) {
       const msg = (e?.message || "").toLowerCase();
       if (msg === "bad_credentials" || msg.includes("invalid") || msg.includes("credentials") || msg.includes("incorrect") || msg.includes("unauthorized") || msg.includes("401")) {
         setError("Incorrect email or password. Please try again.");
       } else if (msg === "no_church") {
         setError("Your account isn't linked to a church yet. Use the 'Join My Church' tab to connect, or create a new workspace.");
-      } else if (msg.includes("verify") || msg.includes("confirm") || msg.includes("email")) {
-        // Show verification screen so they can enter their code
-        setPendingVerification({ email: signInEmail.trim(), password: signInPassword });
       } else {
         setError("Sign in failed. Please check your connection and try again.");
+      }
+    } finally { setLoading(false); }
+  };
+
+  const handleSocialSignIn = async (providerMethod) => {
+    setError(""); setLoading(true);
+    try {
+      const { user } = await base44.auth[providerMethod]();
+      if (!user) throw new Error("bad_credentials");
+      await resolveMemberAndEnter(user);
+    } catch (e) {
+      console.error(`Social sign-in failed: code=${e?.code} message=${e?.message}`);
+      const msg = (e?.message || "").toLowerCase();
+      if (msg === "no_church") {
+        setError("Your account isn't linked to a church yet. Use the 'Join My Church' tab (with the email/password your admin gave you), or create a new workspace.");
+      } else if (msg.includes("popup-closed") || msg.includes("cancelled")) {
+        // User closed the popup — not an error worth surfacing.
+      } else {
+        setError("Sign in failed. Please try again.");
       }
     } finally { setLoading(false); }
   };
@@ -285,12 +529,14 @@ function LoginScreen({ onAuth }) {
         if (!user) throw new Error("bad_credentials");
       } catch (loginErr) {
         const loginMsg = (loginErr?.message || "").toLowerCase();
-        if (loginMsg.includes("verify") || loginMsg.includes("confirm") || loginMsg.includes("email")) {
-          // Need verification — show the OTP screen, pass church context so we can link after
-          setPendingVerification({ email: joinEmail.trim(), password: joinPassword, church });
-          return;
+        const noSuchAccount = loginMsg.includes("user-not-found") || loginMsg.includes("invalid-credential") || loginMsg.includes("no user record");
+        if (noSuchAccount) {
+          // First time joining — this becomes their new account.
+          const result = await base44.auth.register({ email: joinEmail.trim(), password: joinPassword });
+          user = result.user;
+        } else {
+          throw loginErr;
         }
-        throw loginErr;
       }
 
       await completeJoin(user, church);
@@ -308,13 +554,36 @@ function LoginScreen({ onAuth }) {
     } finally { setLoading(false); }
   };
 
+  const handleSocialJoin = async (providerMethod) => {
+    setError(""); setLoading(true);
+    try {
+      if (!joinCode.trim()) throw new Error("Please enter your team code.");
+      const churches = await ChurchEntity.filter({ team_code: joinCode.trim().toUpperCase() });
+      if (churches.length === 0) throw new Error("That team code wasn't found. Double-check with your admin.");
+      const church = churches[0];
+
+      const { user } = await base44.auth[providerMethod]();
+      if (!user) throw new Error("bad_credentials");
+      await completeJoin(user, church);
+    } catch (e) {
+      const msg = (e?.message || "").toLowerCase();
+      if (msg.includes("popup-closed") || msg.includes("cancelled")) {
+        // User closed the sheet — not an error worth surfacing.
+      } else if (msg.includes("team code") || msg.includes("wasn't found") || msg.includes("please enter")) {
+        setError(e.message);
+      } else {
+        setError("Sign in failed. Please try again.");
+      }
+    } finally { setLoading(false); }
+  };
+
   const completeJoin = async (user, church) => {
     // Check if already a member
     const existing = await ChurchMemberEntity.filter({ church_id: church.id, user_id: user.id });
     if (existing.length > 0) {
       globalUser = { ...user, ...existing[0] };
       globalChurch = church;
-      onAuth();
+      proceedOrVerify(user);
       return;
     }
     // New member — create profile and link to church
@@ -330,7 +599,7 @@ function LoginScreen({ onAuth }) {
     });
     globalUser = { ...user, ...newMember };
     globalChurch = church;
-    onAuth();
+    proceedOrVerify(user);
   };
 
   const handleForgotPassword = async () => {
@@ -349,34 +618,12 @@ function LoginScreen({ onAuth }) {
     } finally { setLoading(false); }
   };
 
-  const handleVerifiedSignIn = async (user) => {
-    // If this was a join flow, complete the church linking
-    if (pendingVerification?.church) {
-      await completeJoin(user, pendingVerification.church);
-      return;
-    }
-    // Normal sign-in verification — load their church/member profile
-    const members = await ChurchMemberEntity.filter({ user_id: user.id });
-    if (members.length > 0) {
-      const churches = await ChurchEntity.filter({ id: members[0].church_id });
-      globalUser = { ...user, ...members[0] };
-      globalChurch = churches[0] || null;
-      onAuth();
-    } else {
-      // No church yet after verification — go back to login to join/create
-      setPendingVerification(null);
-      setTab("new");
-      setError("Email verified! Now set up or join your church workspace.");
-    }
-  };
-
-  if (pendingVerification) {
+  if (pendingVerifyUser) {
     return (
       <VerifyEmailScreen
-        email={pendingVerification.email}
-        password={pendingVerification.password}
-        onVerified={handleVerifiedSignIn}
-        onBack={() => setPendingVerification(null)}
+        email={pendingVerifyUser.email}
+        onVerified={onAuth}
+        onSignOut={async () => { await base44.auth.logout(); setPendingVerifyUser(null); }}
       />
     );
   }
@@ -384,7 +631,7 @@ function LoginScreen({ onAuth }) {
   if (showSetup) return <SetupWizard onDone={onAuth} onBack={() => setShowSetup(false)} />;
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center relative">
+    <div className="auth-screen bg-background flex items-center justify-center relative">
       <GlobalStyles />
       {/* Deep ambient radial glow matching screenshot */}
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-primary/15 via-background to-background" />
@@ -461,6 +708,31 @@ function LoginScreen({ onAuth }) {
                 {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Sign In"}
                 <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent animate-[shimmer_2s_infinite] bg-[length:200%_100%]" />
               </Button>
+
+              <div className="flex items-center gap-3 py-1">
+                <div className="flex-1 h-px bg-border/40" />
+                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">or</span>
+                <div className="flex-1 h-px bg-border/40" />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleSocialSignIn("signInWithGoogle")}
+                  disabled={loading}
+                  className="h-11 rounded-xl text-xs font-semibold border border-border/50 bg-background/50 text-foreground hover:bg-background transition-colors disabled:opacity-50"
+                >
+                  Continue with Google
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSocialSignIn("signInWithApple")}
+                  disabled={loading}
+                  className="h-11 rounded-xl text-xs font-semibold border border-border/50 bg-background/50 text-foreground hover:bg-background transition-colors disabled:opacity-50"
+                >
+                  Continue with Apple
+                </button>
+              </div>
             </motion.div>
           )}
 
@@ -488,13 +760,39 @@ function LoginScreen({ onAuth }) {
                 <Label className="text-xs font-medium text-muted-foreground ml-1">Team Join Code</Label>
                 <Input value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="Paste code from your admin" className="mt-1.5 bg-background/50 border-border/50 text-foreground text-sm font-mono uppercase focus:bg-background transition-colors" />
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleSocialJoin("signInWithGoogle")}
+                  disabled={loading}
+                  className="h-11 rounded-xl text-xs font-semibold border border-border/50 bg-background/50 text-foreground hover:bg-background transition-colors disabled:opacity-50"
+                >
+                  Continue with Google
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSocialJoin("signInWithApple")}
+                  disabled={loading}
+                  className="h-11 rounded-xl text-xs font-semibold border border-border/50 bg-background/50 text-foreground hover:bg-background transition-colors disabled:opacity-50"
+                >
+                  Continue with Apple
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3 py-1">
+                <div className="flex-1 h-px bg-border/40" />
+                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">or use email</span>
+                <div className="flex-1 h-px bg-border/40" />
+              </div>
+
               <div>
                 <Label className="text-xs font-medium text-muted-foreground ml-1">Your Email</Label>
                 <Input value={joinEmail} onChange={e => setJoinEmail(e.target.value)} placeholder="you@yourchurch.com" type="email" className="mt-1.5 bg-background/50 border-border/50 text-foreground text-sm focus:bg-background transition-colors" />
               </div>
               <div>
-                <Label className="text-xs font-medium text-muted-foreground ml-1">Temporary Password</Label>
-                <Input value={joinPassword} onChange={e => setJoinPassword(e.target.value)} placeholder="Given by your admin" type="password" className="mt-1.5 bg-background/50 border-border/50 text-foreground text-sm focus:bg-background transition-colors" />
+                <Label className="text-xs font-medium text-muted-foreground ml-1">Password</Label>
+                <Input value={joinPassword} onChange={e => setJoinPassword(e.target.value)} placeholder="Choose a password (or enter your existing one)" type="password" className="mt-1.5 bg-background/50 border-border/50 text-foreground text-sm focus:bg-background transition-colors" />
               </div>
               <Button onClick={handleJoin} disabled={loading} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 h-11 rounded-xl font-semibold shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-[0.98] transition-all mt-2">
                 {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Join My Church"}
@@ -532,158 +830,12 @@ function LoginScreen({ onAuth }) {
   );
 }
 
-// ─── Email Verification Screen ────────────────────────────────────────────────
-function VerifyEmailScreen({ email, password, onVerified, onBack }) {
-  const [code, setCode] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [resending, setResending] = useState(false);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
-
-  const [resendCooldown, setResendCooldown] = useState(0);
-
-  useEffect(() => {
-    if (resendCooldown <= 0) return;
-    const timer = setTimeout(() => setResendCooldown(c => c - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [resendCooldown]);
-
-  const handleVerify = async () => {
-    setError(""); setLoading(true);
-    try {
-      if (!code.trim()) throw new Error("Please enter the verification code from your email.");
-      await base44.auth.verifyOtp({ email, otpCode: code.trim() });
-      // After verification, log in to establish session
-      const { user } = await base44.auth.loginViaEmailPassword(email, password);
-      if (!user) throw new Error("Verification succeeded but login failed. Please use the Sign In tab.");
-      onVerified(user);
-    } catch (e) {
-      const msg = (e?.message || "").toLowerCase();
-      if (msg.includes("invalid") || msg.includes("incorrect") || msg.includes("wrong") || msg.includes("mismatch") || msg.includes("not found")) {
-        setError("That code is incorrect. Double-check your email and try again.");
-      } else if (msg.includes("expired") || msg.includes("expir")) {
-        setError("This code has expired. Click 'Resend Code' to get a fresh one.");
-      } else if (msg.includes("already") || msg.includes("verified")) {
-        setError("This email is already verified. Please use the Sign In tab.");
-      } else if (msg.includes("login failed")) {
-        setError(e.message);
-      } else {
-        setError(e.message || "Verification failed. Please try again.");
-      }
-    } finally { setLoading(false); }
-  };
-
-  const handleResend = async () => {
-    if (resendCooldown > 0) return;
-    setError(""); setSuccess(""); setResending(true);
-    try {
-      await base44.auth.resendOtp(email);
-      setSuccess("A new code was sent! Check your inbox (and spam folder).");
-      setCode("");
-      setResendCooldown(60);
-    } catch (e) {
-      const msg = (e?.message || "").toLowerCase();
-      if (msg.includes("rate") || msg.includes("limit") || msg.includes("too many")) {
-        setError("Too many requests. Please wait a minute before trying again.");
-      } else {
-        setError("Could not resend the code. Please wait a moment and try again.");
-      }
-    } finally { setResending(false); }
-  };
-
-  return (
-    <div className="min-h-screen bg-background flex items-center justify-center relative">
-      <GlobalStyles />
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-primary/15 via-background to-background" />
-      <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] bg-primary/20 rounded-full blur-[120px] pointer-events-none mix-blend-screen hidden sm:block" style={{ animation: 'floatA 12s ease-in-out infinite' }} />
-
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
-        className="w-full max-w-[420px] mx-4 relative z-10"
-      >
-        <div className="glass-panel rounded-2xl p-8 shadow-2xl shadow-black/40">
-          <div className="text-center mb-8">
-            <div className="w-14 h-14 rounded-2xl bg-primary flex items-center justify-center mx-auto mb-4 shadow-xl shadow-primary/20">
-              <Mail className="w-7 h-7 text-primary-foreground" />
-            </div>
-            <h1 className="text-xl font-bold text-foreground tracking-tight">Check Your Email</h1>
-            <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-              We sent a verification code to<br />
-              <span className="text-foreground font-semibold">{email}</span>
-            </p>
-          </div>
-
-          <AnimatePresence mode="wait">
-            {error && (
-              <motion.div key="err" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden mb-4">
-                <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2.5">
-                  <AlertCircle className="w-4 h-4 text-destructive shrink-0" />
-                  <p className="text-xs font-medium text-destructive">{error}</p>
-                </div>
-              </motion.div>
-            )}
-            {success && (
-              <motion.div key="ok" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden mb-4">
-                <div className="flex items-center gap-2 bg-primary/10 border border-primary/20 rounded-lg px-3 py-2.5">
-                  <Check className="w-4 h-4 text-primary shrink-0" />
-                  <p className="text-xs font-medium text-primary">{success}</p>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <div className="space-y-4">
-            <div>
-              <Label className="text-xs font-medium text-muted-foreground ml-1">Verification Code</Label>
-              <Input
-                value={code}
-                onChange={e => setCode(e.target.value)}
-                placeholder="Enter code from your email"
-                className="mt-1.5 bg-background/50 border-border/50 text-foreground text-sm font-mono tracking-widest text-center focus:bg-background transition-colors"
-                onKeyDown={e => e.key === "Enter" && handleVerify()}
-                autoFocus
-              />
-            </div>
-
-            <Button
-              onClick={handleVerify}
-              disabled={loading}
-              className="w-full bg-primary text-primary-foreground hover:bg-primary/90 h-11 rounded-xl font-semibold shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-[0.98] transition-all relative overflow-hidden"
-            >
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <><Check className="w-4 h-4 mr-2" /> Verify &amp; Continue</>}
-              <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent animate-[shimmer_2s_infinite] bg-[length:200%_100%]" />
-            </Button>
-
-            <div className="flex items-center justify-between pt-1">
-              <button
-                onClick={onBack}
-                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                ← Back
-              </button>
-              <button
-                onClick={handleResend}
-                disabled={resending || resendCooldown > 0}
-                className="text-xs text-primary font-semibold hover:underline transition-all disabled:opacity-50"
-              >
-                {resending ? "Sending..." : resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Resend Code"}
-              </button>
-            </div>
-          </div>
-        </div>
-      </motion.div>
-    </div>
-  );
-}
-
 // ─── Setup Wizard ─────────────────────────────────────────────────────────────
 function SetupWizard({ onDone, onBack }) {
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [pendingVerification, setPendingVerification] = useState(null); // { email, password }
+  const [pendingVerifyEmail, setPendingVerifyEmail] = useState(null);
   const [data, setData] = useState({
     churchName: "", city: "", state: "", website: "",
     serviceDay: "Sunday", serviceTime: "10:00", serviceName: "Morning Worship", timezone: "Eastern (ET)",
@@ -708,9 +860,12 @@ function SetupWizard({ onDone, onBack }) {
     { title: "Create Admin Account", icon: Shield, subtitle: "This is your main administrator account." }
   ];
 
-  const completeWorkspaceSetup = async (user) => {
-    // Called after email is verified and session is established
-    await base44.auth.updateMe({ full_name: `${data.firstName.trim()} ${data.lastName.trim()}` });
+  const completeWorkspaceSetup = async (user, overrides = {}) => {
+    const firstName = (overrides.firstName ?? data.firstName).trim();
+    const lastName = (overrides.lastName ?? data.lastName).trim();
+    const email = (overrides.email ?? data.email).trim();
+
+    await base44.auth.updateMe({ full_name: `${firstName} ${lastName}` });
 
     const teamCode = [
       Math.random().toString(36).substring(2, 5),
@@ -733,9 +888,9 @@ function SetupWizard({ onDone, onBack }) {
     });
 
     const member = await ChurchMemberEntity.create({
-      first_name: data.firstName.trim(),
-      last_name: data.lastName.trim(),
-      email: data.email.trim(),
+      first_name: firstName,
+      last_name: lastName,
+      email,
       instrument: data.instrument.trim(),
       role: "Admin",
       church_id: church.id,
@@ -743,9 +898,32 @@ function SetupWizard({ onDone, onBack }) {
       user_id: user.id
     });
 
-    globalUser = { ...user, ...member, full_name: `${data.firstName.trim()} ${data.lastName.trim()}` };
+    globalUser = { ...user, ...member, full_name: `${firstName} ${lastName}` };
     globalChurch = church;
+    if (!user.emailVerified) { setPendingVerifyEmail(user.email); return; }
     onDone();
+  };
+
+  const handleGoogleSignup = async () => {
+    setError(""); setLoading(true);
+    try {
+      if (!data.churchName.trim()) throw new Error("Church name is required.");
+      const { user } = await base44.auth.signInWithGoogle();
+      const nameParts = (user.full_name || "").trim().split(" ").filter(Boolean);
+      const firstName = data.firstName.trim() || nameParts[0] || "";
+      const lastName = data.lastName.trim() || nameParts.slice(1).join(" ") || "";
+      if (!firstName || !lastName) throw new Error("Please enter your first and last name.");
+      await completeWorkspaceSetup(user, { firstName, lastName, email: user.email });
+    } catch (e) {
+      const msg = (e?.message || "").toLowerCase();
+      if (msg.includes("popup-closed") || msg.includes("cancelled")) {
+        // User closed the sheet — not an error worth surfacing.
+      } else if (msg.includes("church") || msg.includes("name")) {
+        setError(e.message);
+      } else {
+        setError("Google sign-up failed. Please try again.");
+      }
+    } finally { setLoading(false); }
   };
 
   const handleFinish = async () => {
@@ -758,17 +936,12 @@ function SetupWizard({ onDone, onBack }) {
       if (data.password !== data.confirmPassword) throw new Error("Passwords don't match. Please re-enter.");
       if (!data.churchName.trim()) throw new Error("Church name is required.");
 
-      // Register — this sends a verification email
-      await base44.auth.register({ email: data.email.trim(), password: data.password });
-
-      // Always show the OTP verify screen after registration.
-      // After verification, completeWorkspaceSetup will be called with the logged-in user.
-      setPendingVerification({ email: data.email.trim(), password: data.password });
-      return;
+      const { user } = await registerOrRecoverOrphanedAccount(data.email.trim(), data.password);
+      await completeWorkspaceSetup(user);
     } catch (e) {
       const msg = (e?.message || "").toLowerCase();
       if (msg.includes("already") || msg.includes("exists") || msg.includes("registered") || msg.includes("duplicate") || msg.includes("taken")) {
-        setError("An account with this email already exists. Please go back and sign in instead.");
+        setError(e.message.includes("already") ? e.message : "An account with this email already exists. Please go back and sign in instead.");
       } else if (msg.includes("password") || msg.includes("match") || msg.includes("6 char")) {
         setError(e.message);
       } else if (msg.includes("name") || msg.includes("church") || msg.includes("email") || msg.includes("please")) {
@@ -779,21 +952,20 @@ function SetupWizard({ onDone, onBack }) {
     } finally { setLoading(false); }
   };
 
-  const CurrentIcon = steps[step].icon;
-
-  if (pendingVerification) {
+  if (pendingVerifyEmail) {
     return (
       <VerifyEmailScreen
-        email={pendingVerification.email}
-        password={pendingVerification.password}
-        onVerified={completeWorkspaceSetup}
-        onBack={() => setPendingVerification(null)}
+        email={pendingVerifyEmail}
+        onVerified={onDone}
+        onSignOut={async () => { await base44.auth.logout(); onBack(); }}
       />
     );
   }
 
+  const CurrentIcon = steps[step].icon;
+
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
+    <div className="auth-screen bg-background flex items-center justify-center relative overflow-hidden">
       <GlobalStyles />
       <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-primary/15 rounded-full blur-[120px] pointer-events-none mix-blend-screen hidden sm:block" style={{ animation: 'floatA 12s ease-in-out infinite' }} />
       <div className="absolute bottom-0 right-1/4 w-[400px] h-[400px] bg-accent/10 rounded-full blur-[100px] pointer-events-none mix-blend-screen hidden sm:block" style={{ animation: 'floatB 10s ease-in-out infinite 2s' }} />
@@ -918,12 +1090,28 @@ function SetupWizard({ onDone, onBack }) {
                     </div>
                   </div>
                   <div>
-                    <Label className="text-xs font-medium text-muted-foreground ml-1">Email Address *</Label>
-                    <Input value={data.email} onChange={e => set("email", e.target.value)} placeholder="you@yourchurch.com" type="email" className="mt-1.5 bg-background/50 border-border/50 text-foreground text-sm focus:bg-background" />
-                  </div>
-                  <div>
                     <Label className="text-xs font-medium text-muted-foreground ml-1">Instrument / Role</Label>
                     <Input value={data.instrument} onChange={e => set("instrument", e.target.value)} placeholder="e.g. Worship Leader, Lead Guitar" className="mt-1.5 bg-background/50 border-border/50 text-foreground text-sm focus:bg-background" />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignup}
+                    disabled={loading}
+                    className="w-full h-11 rounded-xl text-sm font-semibold border border-border/50 bg-background/50 text-foreground hover:bg-background transition-colors disabled:opacity-50"
+                  >
+                    Continue with Google
+                  </button>
+
+                  <div className="flex items-center gap-3 py-1">
+                    <div className="flex-1 h-px bg-border/40" />
+                    <span className="text-[10px] text-muted-foreground uppercase tracking-wider">or use email</span>
+                    <div className="flex-1 h-px bg-border/40" />
+                  </div>
+
+                  <div>
+                    <Label className="text-xs font-medium text-muted-foreground ml-1">Email Address *</Label>
+                    <Input value={data.email} onChange={e => set("email", e.target.value)} placeholder="you@yourchurch.com" type="email" className="mt-1.5 bg-background/50 border-border/50 text-foreground text-sm focus:bg-background" />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -1291,6 +1479,7 @@ function MainApp({ onLogout }) {
   const [notifications, setNotifications] = useState([]);
   const [myLibrary, setMyLibrary] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [showSongModal, setShowSongModal] = useState(false);
   const [editSong, setEditSong] = useState(null);
   const [previewSong, setPreviewSong] = useState(null);
@@ -1385,6 +1574,18 @@ function MainApp({ onLogout }) {
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   }, [church?.id, activeSection]);
+
+  const handleManualRefresh = async () => {
+    if (manualRefreshing) return;
+    setManualRefreshing(true);
+    try { await loadData(); } finally { setManualRefreshing(false); }
+  };
+
+  const markNotificationRead = async (n) => {
+    if (n.is_read) return;
+    setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, is_read: true } : x));
+    await NotificationEntity.update(n.id, { is_read: true });
+  };
 
   // Load data for the current section whenever it changes (show spinner only on first load)
   const isFirstLoad = useRef(true);
@@ -1543,7 +1744,7 @@ function MainApp({ onLogout }) {
                   <option value="favorites">Favorites First</option>
                 </select>
               </div>
-              <div className="flex gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
+              <div className="flex gap-1.5 overflow-x-auto scrollbar-hide pb-0.5 pr-4" style={SCROLL_FADE_STYLE}>
                 {["All", "★", "ML", "EN", "G", "A", "B", "C", "D", "E", "F"].map(k => (
                   <button key={k} onClick={() => setSongKeyFilter(k)} className={`px-3 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${songKeyFilter === k ? "bg-primary text-primary-foreground shadow-md" : `bg-card border border-border/40 text-muted-foreground hover:text-foreground hover:border-primary/30 ${k === "ML" ? "hover:text-orange-300" : ""}`}`}>{k}</button>
                 ))}
@@ -1674,7 +1875,7 @@ function MainApp({ onLogout }) {
       {/* Mobile sidebar overlay */}
       <AnimatePresence>
         {sidebarOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-40 sm:hidden">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 sm:hidden">
             <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
             <motion.div initial={{ x: -280 }} animate={{ x: 0 }} exit={{ x: -280 }} transition={{ type: "spring", damping: 25, stiffness: 200 }} className="absolute inset-y-0 left-0 w-72 z-50">
               <Sidebar mobile />
@@ -1689,11 +1890,10 @@ function MainApp({ onLogout }) {
         <div className="hidden sm:flex items-center gap-4 px-6 py-4 border-b border-border/30 bg-background/50 backdrop-blur-md shrink-0 sticky top-0 z-30">
           <div className="flex-1" />
           <div className="flex items-center gap-3">
-            <button onClick={loadData} aria-label="Refresh data" className="w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors" title="Refresh"><RefreshCw className="w-4 h-4" /></button>
-            <button onClick={() => navigateTo("notifications")} aria-label="View notifications" className="w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors relative">
-              <Bell className="w-4 h-4" />
-              {notifications.filter(n=>!n.is_read).length > 0 && <span className="absolute top-2 right-2.5 w-2 h-2 rounded-full bg-primary animate-pulse" />}
+            <button onClick={handleManualRefresh} disabled={manualRefreshing} aria-label="Refresh data" className="w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors disabled:opacity-60" title="Refresh">
+              <RefreshCw className={`w-4 h-4 ${manualRefreshing ? "animate-spin" : ""}`} />
             </button>
+            <NotificationBell notifications={notifications} onMarkRead={markNotificationRead} onViewAll={() => navigateTo("notifications")} />
           </div>
         </div>
 
@@ -1711,7 +1911,7 @@ function MainApp({ onLogout }) {
                 <span className="text-xs">Back</span>
               </button>
             ) : (
-              <div className="w-11 h-11 flex items-center justify-center pl-2">
+              <button onClick={() => setSidebarOpen(true)} aria-label="Open menu" className="w-11 h-11 flex items-center justify-center pl-2">
                 <div className={`w-7 h-7 rounded-lg flex items-center justify-center shadow-md shadow-primary/20 overflow-hidden ${church?.logo_url ? "bg-secondary/30 border border-border/30" : "bg-primary"}`}>
                   {church?.logo_url ? (
                     <img src={church.logo_url} alt="logo" className="w-full h-full object-cover scale-[1.35]" />
@@ -1719,7 +1919,7 @@ function MainApp({ onLogout }) {
                     <Music className="w-3.5 h-3.5 text-primary-foreground" />
                   )}
                 </div>
-              </div>
+              </button>
             )}
           </div>
 
@@ -1728,13 +1928,9 @@ function MainApp({ onLogout }) {
             {navItems.find(n => n.id === activeSection)?.label || "Dianoose Stage"}
           </span>
 
-          {/* Right: action buttons */}
+          {/* Right: action buttons — refresh is pull-to-refresh only on mobile */}
           <div className="flex items-center gap-1" style={{ minWidth: 44 }}>
-            <button onClick={loadData} aria-label="Refresh data" className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-muted-foreground active:bg-secondary transition-colors"><RefreshCw className="w-4 h-4" /></button>
-            <button onClick={() => navigateTo("notifications")} aria-label="View notifications" className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-muted-foreground active:bg-secondary transition-colors relative">
-              <Bell className="w-4 h-4" />
-              {notifications.filter(n=>!n.is_read).length > 0 && <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-primary animate-pulse" />}
-            </button>
+            <NotificationBell notifications={notifications} onMarkRead={markNotificationRead} onViewAll={() => navigateTo("notifications")} mobile />
           </div>
         </div>
         
@@ -1829,6 +2025,9 @@ export default function Home() {
 
         const user = await base44.auth.me();
         if (!user) { setChecking(false); return; }
+        // Unverified session — fall through to LoginScreen, which will pick up the
+        // still-signed-in-but-unverified user and show the verification gate itself.
+        if (!user.emailVerified) { setChecking(false); return; }
 
         // Try to find an existing member profile for this user
         const members = await ChurchMemberEntity.filter({ user_id: user.id });
@@ -1885,16 +2084,15 @@ export default function Home() {
   );
 
   if (!authed) return <LoginScreen onAuth={() => setAuthed(true)} />;
-  const handleLogout = () => {
+  const handleLogout = async () => {
     globalUser = null;
     globalChurch = null;
-    // Clear session cookies/storage client-side without hitting any API route
+    await base44.auth.logout();
     document.cookie.split(";").forEach(c => {
       document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date(0).toUTCString() + ";path=/");
     });
     localStorage.clear();
     sessionStorage.clear();
-    // Navigate back to root (auth screen) without any API redirect
     window.location.replace("/");
   };
 

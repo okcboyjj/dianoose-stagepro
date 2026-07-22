@@ -277,12 +277,12 @@ export default function DashboardSection({ church, user, songs, services, member
         <h2 className="text-base font-bold text-foreground mb-3">Quick Actions</h2>
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: "Plan a Service", icon: Calendar, nav: "services", color: "from-primary/20 to-primary/5" },
-            { label: "Browse Songs", icon: Music, nav: "songs", color: "from-primary/20 to-primary/5" },
-            { label: "My Library", icon: Star, nav: "mylibrary", color: "from-yellow-500/20 to-yellow-500/5" },
-            { label: "Team Messages", icon: Users, nav: "messages", color: "from-green-500/20 to-green-500/5" },
+            { label: "Plan a Service", icon: Calendar, nav: "services" },
+            { label: "Browse Songs", icon: Music, nav: "songs" },
+            { label: "My Library", icon: Star, nav: "mylibrary" },
+            { label: "Team Messages", icon: Users, nav: "messages" },
           ].map((qa, i) => (
-            <button key={i} onClick={() => onNavigate(qa.nav)} className={`flex items-center gap-3 p-4 rounded-xl border border-border/40 bg-gradient-to-br ${qa.color} hover:border-primary/40 transition-all group`}>
+            <button key={i} onClick={() => onNavigate(qa.nav)} className="flex items-center gap-3 p-4 rounded-xl border border-border/40 bg-gradient-to-br from-primary/20 to-primary/5 hover:border-primary/40 transition-all group">
               <qa.icon className="w-5 h-5 text-foreground opacity-70 group-hover:opacity-100 group-hover:scale-110 transition-all" />
               <span className="text-xs font-semibold text-foreground">{qa.label}</span>
             </button>
