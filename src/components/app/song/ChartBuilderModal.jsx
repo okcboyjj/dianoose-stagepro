@@ -73,7 +73,6 @@ export default function ChartBuilderModal({ song, onClose, onSave }) {
     { id: 'edit', label: '✏ Edit' },
     { id: 'preview', label: '👁 Preview' },
     { id: 'chords', label: '🎸 Chords' },
-    { id: 'annotate', label: '✍ Annotate' },
   ];
 
   return (
@@ -172,15 +171,6 @@ export default function ChartBuilderModal({ song, onClose, onSave }) {
               </div>
             )}
 
-            {activeTab === 'annotate' && (
-              <div className="flex items-center justify-center h-48 text-muted-foreground text-sm">
-                <div className="text-center">
-                  <p className="text-lg mb-1">✍️</p>
-                  <p className="font-medium">Annotation mode coming soon</p>
-                  <p className="text-xs mt-1 opacity-60">Use the chart editor for notes</p>
-                </div>
-              </div>
-            )}
           </div>
         </motion.div>
       </div>

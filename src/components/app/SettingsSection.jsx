@@ -63,6 +63,7 @@ export default function SettingsSection({ church, user, onChurchUpdate, onUserUp
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const setC = (k, v) => setChurchForm(f => ({ ...f, [k]: v }));
   const setSc = (k, v) => setSchedForm(f => ({ ...f, [k]: v }));
@@ -142,10 +143,19 @@ export default function SettingsSection({ church, user, onChurchUpdate, onUserUp
   const deleteAccount = async () => {
     setDeleting(true);
     try {
+      // Remove the user's church-membership data first (while still authenticated),
+      // then delete the auth account itself so nothing is left behind.
       if (user?.id) await ChurchMemberEntity.delete(user.id);
-      await base44.auth.logout("/");
+      await base44.auth.deleteAccount();
+      window.location.replace("/");
     } catch (e) {
       setDeleting(false);
+      const msg = (e?.message || e?.code || "").toLowerCase();
+      if (msg.includes("requires-recent-login")) {
+        setDeleteError("For security, please sign out and sign back in, then delete your account.");
+      } else {
+        setDeleteError("Couldn't delete your account. Please try again.");
+      }
     }
   };
 
@@ -418,6 +428,7 @@ export default function SettingsSection({ church, user, onChurchUpdate, onUserUp
                   <p className="text-xs text-destructive font-medium">Type <span className="font-bold">DELETE</span> below to confirm.</p>
                 </div>
                 <Input value={deleteConfirmText} onChange={e => setDeleteConfirmText(e.target.value)} placeholder="Type DELETE to confirm" className="bg-background/50 border-destructive/40 text-foreground text-sm" />
+                {deleteError && <p className="text-xs text-destructive font-medium">{deleteError}</p>}
                 <div className="flex gap-2">
                   <Button onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmText(""); }} variant="outline" className="flex-1 border-border/50 h-9 rounded-xl text-xs">Cancel</Button>
                   <Button onClick={deleteAccount} disabled={deleteConfirmText !== "DELETE" || deleting} className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90 h-9 rounded-xl text-xs font-bold">

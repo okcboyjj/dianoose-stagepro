@@ -5,6 +5,7 @@ import {
   signInWithPopup,
   signInWithCredential,
   signOut,
+  deleteUser,
   updateProfile,
   updatePassword,
   reauthenticateWithCredential,
@@ -148,6 +149,20 @@ export const base44 = {
         await FirebaseAuthentication.signOut();
       }
       await signOut(auth);
+    },
+
+    // Actually deletes the Firebase Auth account (not just sign-out) — required by App Store
+    // Guideline 5.1.1(v). The JS SDK owns the session the rest of the app uses, so deleting via
+    // it removes the underlying auth record; native gets a best-effort sign-out afterward to
+    // clear its Keychain copy. deleteUser throws auth/requires-recent-login on stale sessions —
+    // the caller surfaces that so the user can re-authenticate and retry.
+    async deleteAccount() {
+      const user = auth.currentUser;
+      if (!user) throw new Error("Not authenticated");
+      await deleteUser(user);
+      if (Capacitor.isNativePlatform()) {
+        try { await FirebaseAuthentication.signOut(); } catch (_) { /* record already gone */ }
+      }
     },
 
     async updateMe({ full_name }) {
