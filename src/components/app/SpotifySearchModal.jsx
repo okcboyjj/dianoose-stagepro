@@ -55,29 +55,6 @@ export default function SpotifySearchModal({ church, onClose, onImported }) {
     setPlayingId(track.spotify_id);
   };
 
-  const handleImport = async (track) => {
-    if (importingId || importedIds.has(track.spotify_id)) return;
-    setImportingId(track.spotify_id);
-    try {
-      await base44.entities.Song.create({
-        title: track.title,
-        artist: track.artist,
-        church_id: church?.id,
-        // No fake metadata — only what Spotify gives us
-        tags: [],
-      });
-      // Also store full metadata in a way the song library can use
-      // We store extended fields by creating the song with all available data
-      // Re-create with full data including album/artwork stored in notes as structured data
-      setImportedIds(prev => new Set([...prev, track.spotify_id]));
-      onImported?.();
-    } catch (e) {
-      console.error("Import failed", e);
-    } finally {
-      setImportingId(null);
-    }
-  };
-
   const handleImportFull = async (track) => {
     if (importingId || importedIds.has(track.spotify_id)) return;
     setImportingId(track.spotify_id);
@@ -85,18 +62,11 @@ export default function SpotifySearchModal({ church, onClose, onImported }) {
       await base44.entities.Song.create({
         title: track.title,
         artist: track.artist,
+        album: track.album,
+        artwork_url: track.artwork_url,
+        spotify_url: track.spotify_url,
         church_id: church?.id,
         tags: ["spotify-import"],
-        // Store Spotify metadata in available fields
-        youtube_url: track.spotify_url, // repurposed as spotify link until schema update
-        // We'll use arrangement_notes to store album + artwork JSON
-        arrangement_notes: JSON.stringify({
-          album: track.album,
-          artwork_url: track.artwork_url,
-          spotify_url: track.spotify_url,
-          preview_url: track.preview_url,
-          spotify_id: track.spotify_id,
-        }),
       });
       setImportedIds(prev => new Set([...prev, track.spotify_id]));
       onImported?.();

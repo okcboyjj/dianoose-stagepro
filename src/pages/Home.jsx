@@ -14,7 +14,7 @@ import MobileSelect from "@/components/ui/MobileSelect";
 const GlobalSongLibrary = lazy(() => import("@/components/app/GlobalSongLibrary.jsx"));
 const SongDetailModal = lazy(() => import("@/components/app/song/SongDetailModal.jsx"));
 const SongPreviewModal = lazy(() => import("@/components/app/song/SongPreviewModal.jsx"));
-// SpotifySearchModal removed — Spotify search is now integrated into GlobalSongLibrary
+const SpotifySearchModal = lazy(() => import("@/components/app/SpotifySearchModal.jsx"));
 
 const ServicesSection = lazy(() => import("@/components/app/ServicesSection"));
 const MyLibrarySection = lazy(() => import("@/components/app/MyLibrarySection"));
@@ -128,6 +128,12 @@ const GlobalStyles = () => (
     }
     .mobile-header {
       padding-top: env(safe-area-inset-top, 0px);
+    }
+    .sidebar-header-safe {
+      padding-top: max(env(safe-area-inset-top, 0px), 1.25rem);
+    }
+    .desktop-topbar-safe {
+      padding-top: max(env(safe-area-inset-top, 0px), 1rem);
     }
     .auth-screen {
       min-height: 100dvh;
@@ -541,6 +547,7 @@ function LoginScreen({ onAuth }) {
 
       await completeJoin(user, church);
     } catch (e) {
+      console.error(`Join failed: code=${e?.code} message=${e?.message}`);
       const msg = (e?.message || "").toLowerCase();
       if (msg === "bad_credentials" || msg.includes("invalid") || msg.includes("credentials") || msg.includes("incorrect") || msg.includes("unauthorized") || msg.includes("401")) {
         setError("Incorrect email or password. Please try again.");
@@ -1489,6 +1496,7 @@ function MainApp({ onLogout }) {
   const [songSort, setSongSort] = useState("recent");
   const [songLibTab, setSongLibTab] = useState("church");
   const [showOCRImport, setShowOCRImport] = useState(false);
+  const [showSpotifyModal, setShowSpotifyModal] = useState(false);
 
   // React state for church so onChurchUpdate triggers re-renders
   const [church, setChurch] = useState(globalChurch);
@@ -1621,7 +1629,7 @@ function MainApp({ onLogout }) {
 
   const Sidebar = ({ mobile = false }) => (
     <div className={`flex flex-col h-full ${mobile ? "w-full" : "w-64"} bg-card border-r border-border/30 shadow-2xl z-20 relative`}>
-      <div className="p-5 border-b border-border/30 flex items-center gap-4 bg-background/20">
+      <div className="sidebar-header-safe p-5 border-b border-border/30 flex items-center gap-4 bg-background/20">
         <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-lg shadow-primary/20 shrink-0 overflow-hidden ${church?.logo_url ? "bg-secondary/30 border border-border/30" : "bg-primary"}`}>
           {church?.logo_url ? (
             <img src={church.logo_url} alt="Church logo" className="w-full h-full object-cover scale-[1.35]" />
@@ -1699,6 +1707,12 @@ function MainApp({ onLogout }) {
               <p className="text-sm text-muted-foreground font-medium">{songs.length} songs in library</p>
             </div>
             <div className="flex gap-2">
+              <Button onClick={() => setShowSpotifyModal(true)} className="bg-white/8 border border-white/15 text-foreground hover:bg-white/12 h-10 rounded-xl font-semibold transition-colors">
+                <svg viewBox="0 0 24 24" className="w-4 h-4 mr-2 fill-[#1DB954]">
+                  <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.622.622 0 01-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 01-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 01.207.857zm1.223-2.722a.78.78 0 01-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 01-.973-.519.781.781 0 01.52-.974c3.632-1.102 8.147-.568 11.233 1.328a.78.78 0 01.257 1.074zm.105-2.835C14.692 8.95 9.375 8.775 6.297 9.71a.937.937 0 11-.543-1.794c3.532-1.072 9.404-.865 13.115 1.338a.937.937 0 01-.955 1.613z"/>
+                </svg>
+                Import from Spotify
+              </Button>
               <Button onClick={() => setShowOCRImport(true)} className="bg-white/8 border border-white/15 text-foreground hover:bg-white/12 h-10 rounded-xl font-semibold transition-colors">
                 <ScanLine className="w-4 h-4 mr-2" /> Scan Chart
               </Button>
@@ -1751,7 +1765,7 @@ function MainApp({ onLogout }) {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
               {songs.filter(s => {
                 if (songKeyFilter === "★") return s.is_favorite;
                 if (songKeyFilter === "ML") return s.language === "Malayalam";
@@ -1887,7 +1901,7 @@ function MainApp({ onLogout }) {
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden relative z-10">
         {/* Desktop top bar */}
-        <div className="hidden sm:flex items-center gap-4 px-6 py-4 border-b border-border/30 bg-background/50 backdrop-blur-md shrink-0 sticky top-0 z-30">
+        <div className="desktop-topbar-safe hidden sm:flex items-center gap-4 px-6 py-4 border-b border-border/30 bg-background/50 backdrop-blur-md shrink-0 sticky top-0 z-30">
           <div className="flex-1" />
           <div className="flex items-center gap-3">
             <button onClick={handleManualRefresh} disabled={manualRefreshing} aria-label="Refresh data" className="w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors disabled:opacity-60" title="Refresh">
@@ -1995,6 +2009,15 @@ function MainApp({ onLogout }) {
             churchId={church?.id}
             onClose={() => setShowOCRImport(false)}
             onSaved={() => { setShowOCRImport(false); loadData(); }}
+          />
+        </Suspense>
+      )}
+      {showSpotifyModal && (
+        <Suspense fallback={null}>
+          <SpotifySearchModal
+            church={church}
+            onClose={() => setShowSpotifyModal(false)}
+            onImported={() => loadData()}
           />
         </Suspense>
       )}

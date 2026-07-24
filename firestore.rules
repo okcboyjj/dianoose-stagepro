@@ -32,9 +32,11 @@ service cloud.firestore {
     }
 
     match /churches/{churchId} {
-      // Joining-by-team-code and admin self-repair both query churches before the reader has
-      // a churchMembers doc yet, so read access can't be gated on existing membership.
-      allow read: if isSignedIn();
+      // Joining-by-team-code queries this collection before the user has even signed in
+      // (that's the whole point of the flow), so read access can't require auth either —
+      // isSignedIn() here blocked every first-time join with permission-denied. Church docs
+      // hold no sensitive data (name, service time, team code), same trust level as an invite code.
+      allow read: if true;
       allow create: if isSignedIn() && request.resource.data.admin_user_id == request.auth.uid;
       allow update, delete: if isChurchAdmin(churchId);
     }

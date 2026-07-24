@@ -47,6 +47,12 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Dianoose Stage uses your camera to scan chord charts so it can pull out the lyrics and chords for you.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Dianoose Stage needs access to your photos so you can import a chart photo to scan.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
