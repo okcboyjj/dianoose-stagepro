@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { X, ChevronLeft, ChevronRight, Type, Settings, Play, Pause } from "lucide-react";
 import { transposeFullChart, ALL_KEYS, suggestCapo } from "../song/ChordTransposer";
 
@@ -179,15 +180,16 @@ export default function StageMode({ service, songs, onClose, onSaveArrangement }
   };
 
   if (!setlist.length) {
-    return (
+    return createPortal(
       <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center gap-4 text-white/70">
         <p>No songs in this service's setlist yet.</p>
         <button onClick={onClose} className="px-4 py-2 rounded-xl bg-white/10">Close</button>
-      </div>
+      </div>,
+      document.body
     );
   }
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[200] bg-black text-white flex flex-col select-none"
       onMouseMove={flashControls}
@@ -296,6 +298,7 @@ export default function StageMode({ service, songs, onClose, onSaveArrangement }
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   );
 }
