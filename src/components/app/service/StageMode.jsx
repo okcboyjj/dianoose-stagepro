@@ -44,13 +44,23 @@ function ChordLine({ line, fontSize }) {
 const NEXT_DEFAULT = ["ArrowRight", "ArrowDown", "PageDown", "Space"];
 const PREV_DEFAULT = ["ArrowLeft", "ArrowUp", "PageUp"];
 
-export default function StageMode({ service, songs, onClose }) {
+export default function StageMode({ service, songs, onClose, onSaveArrangement }) {
   // Resolve the setlist in order.
   const setlist = (service?.songs || []).map(id => songs.find(s => s.id === id)).filter(Boolean);
 
+  // Per-service arrangement (key/tempo/notes decided at practice), keyed by song id.
+  const arrangements = service?.arrangements || {};
+
   const [index, setIndex] = useState(0);
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem("stage_font")) || 26);
-  const [semitonesById, setSemitonesById] = useState({});
+  // Seed transpose from the saved arrangement so Sunday opens in the rehearsed key.
+  const [semitonesById, setSemitonesById] = useState(() => {
+    const init = {};
+    Object.keys(arrangements).forEach(id => {
+      if (typeof arrangements[id]?.semitones === "number") init[id] = arrangements[id].semitones;
+    });
+    return init;
+  });
   const [showControls, setShowControls] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [autoScroll, setAutoScroll] = useState(false);
@@ -59,24 +69,39 @@ export default function StageMode({ service, songs, onClose }) {
   // Footswitch key mappings (persisted). Most page-turner pedals send configurable keystrokes.
   const [nextKeys, setNextKeys] = useState(() => JSON.parse(localStorage.getItem("stage_next") || "null") || NEXT_DEFAULT);
   const [prevKeys, setPrevKeys] = useState(() => JSON.parse(localStorage.getItem("stage_prev") || "null") || PREV_DEFAULT);
+  // Drafts for the current song's editable arrangement (saved on blur).
+  const [noteDraft, setNoteDraft] = useState("");
+  const [bpmDraft, setBpmDraft] = useState("");
 
   const scrollRef = useRef(null);
   const hideTimer = useRef(null);
   const wakeLock = useRef(null);
 
   const song = setlist[index];
+  const arr = arrangements[song?.id] || {};
   const originalKey = song?.key || "G";
   const semis = semitonesById[song?.id] || 0;
   const currentKey = ALL_KEYS[(ALL_KEYS.indexOf(originalKey) + semis + 120) % 12] || originalKey;
   const capo = suggestCapo(originalKey, currentKey);
   const chart = transposeFullChart(song?.chart_content || "", semis, currentKey);
+  const bpm = arr.bpm || song?.bpm;          // service arrangement can override the song's default
+  const notes = arr.notes;                    // free-text arrangement notes for the team
 
   const next = useCallback(() => setIndex(i => Math.min(i + 1, setlist.length - 1)), [setlist.length]);
   const prev = useCallback(() => setIndex(i => Math.max(i - 1, 0)), []);
-  const transpose = (dir) => setSemitonesById(m => ({ ...m, [song.id]: ((m[song.id] || 0) + dir + 12) % 12 }));
+  const transpose = (dir) => setSemitonesById(m => {
+    const v = ((m[song.id] || 0) + dir + 12) % 12;
+    onSaveArrangement?.(song.id, { semitones: v });   // persist the rehearsed key to the service
+    return { ...m, [song.id]: v };
+  });
 
-  // Reset scroll + auto-scroll when the song changes.
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [index]);
+  // Reset scroll + reseed arrangement drafts when the song changes.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    const a = arrangements[setlist[index]?.id] || {};
+    setNoteDraft(a.notes || "");
+    setBpmDraft(a.bpm || "");
+  }, [index]);
 
   // Keep the screen awake during the service (where supported).
   useEffect(() => {
@@ -184,7 +209,7 @@ export default function StageMode({ service, songs, onClose }) {
           <button onClick={() => transpose(1)} className="w-7 h-7 rounded font-bold hover:bg-white/10">+</button>
         </div>
         {capo > 0 && <span className="text-xs font-mono bg-[#6C63FF]/20 text-[#8B80FF] px-2 py-1 rounded-lg">CAPO {capo}</span>}
-        {song?.bpm && <span className="text-xs font-mono bg-white/10 px-2 py-1 rounded-lg">{song.bpm} BPM</span>}
+        {bpm && <span className="text-xs font-mono bg-white/10 px-2 py-1 rounded-lg">{bpm} BPM</span>}
         <div className="flex items-center gap-1 bg-white/10 rounded-lg px-1">
           <button onClick={() => changeFont(-2)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10"><Type className="w-3 h-3" /></button>
           <button onClick={() => changeFont(2)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10"><Type className="w-5 h-5" /></button>
@@ -195,6 +220,12 @@ export default function StageMode({ service, songs, onClose }) {
 
       {/* Chart */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-6" style={{ WebkitOverflowScrolling: "touch" }}>
+        {notes && (
+          <div className="mb-4 flex items-start gap-2 bg-[#6C63FF]/12 border border-[#6C63FF]/30 rounded-xl px-4 py-2.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-[#8B80FF] mt-0.5">Notes</span>
+            <span className="text-sm text-white/80">{notes}</span>
+          </div>
+        )}
         <div style={{ fontFamily: "monospace" }}>{renderChart()}</div>
         <div className="h-40" />
       </div>
@@ -218,9 +249,34 @@ export default function StageMode({ service, songs, onClose }) {
         <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-10" onClick={() => { setShowSettings(false); setLearning(null); }}>
           <div className="bg-[#1a1a24] border border-white/15 rounded-2xl p-6 w-[420px] max-w-[90vw]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-bold text-lg">Footswitch & Controls</h3>
+              <h3 className="font-bold text-lg">Arrangement & Footswitch</h3>
               <button onClick={() => { setShowSettings(false); setLearning(null); }} className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10"><X className="w-4 h-4" /></button>
             </div>
+
+            {/* This song's arrangement — saved to the service so Sunday loads what you set here */}
+            <div className="mb-5">
+              <div className="text-sm font-semibold mb-2 truncate">{song?.title} — arrangement</div>
+              <div className="flex items-center gap-3 mb-2">
+                <span className="text-xs text-white/50 w-20">Key: <span className="text-[#8B80FF] font-bold font-mono">{currentKey}</span></span>
+                <label className="text-xs text-white/50">BPM</label>
+                <input
+                  type="number" value={bpmDraft} placeholder={song?.bpm || "—"}
+                  onChange={e => setBpmDraft(e.target.value)}
+                  onBlur={() => onSaveArrangement?.(song.id, { bpm: bpmDraft ? Number(bpmDraft) : null })}
+                  className="w-20 bg-white/10 rounded-lg px-2 py-1 text-sm text-white outline-none focus:bg-white/15"
+                />
+              </div>
+              <textarea
+                value={noteDraft} placeholder="Arrangement notes (e.g. skip verse 2, extra chorus, key change into bridge)…"
+                onChange={e => setNoteDraft(e.target.value)}
+                onBlur={() => onSaveArrangement?.(song.id, { notes: noteDraft })}
+                rows={2}
+                className="w-full bg-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none focus:bg-white/15 resize-none placeholder:text-white/30"
+              />
+              <p className="text-[10px] text-white/30 mt-1">Set the key with the +/− buttons on the top bar. Everything here saves to this service.</p>
+            </div>
+
+            <div className="text-sm font-semibold mb-2 pt-4 border-t border-white/10">Footswitch</div>
             <p className="text-xs text-white/50 mb-4">Most page-turner pedals (AirTurn, PageFlip, etc.) send keystrokes. Tap “Learn,” then press your pedal to map it.</p>
             {[["next", "Next song", nextKeys], ["prev", "Previous song", prevKeys]].map(([id, label, keys]) => (
               <div key={id} className="flex items-center gap-3 mb-3">

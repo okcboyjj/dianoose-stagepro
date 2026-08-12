@@ -283,6 +283,20 @@ export default function ServicesSection({ church, songs, services, members, curr
   const [selectedService, setSelectedService] = useState(null);
   const [stageService, setStageService] = useState(null);
 
+  // Persist a per-song arrangement decision (key/tempo/notes) onto the service, so what's
+  // set at rehearsal is what Stage Mode loads on Sunday. Optimistic local update + write.
+  const saveArrangement = (songId, patch) => {
+    setStageService(prev => {
+      if (!prev) return prev;
+      const arrangements = {
+        ...(prev.arrangements || {}),
+        [songId]: { ...(prev.arrangements?.[songId] || {}), ...patch },
+      };
+      base44.entities.Service.update(prev.id, { arrangements }).catch(() => {});
+      return { ...prev, arrangements };
+    });
+  };
+
   const filtered = services.filter(s => {
     if (filter === "Upcoming") return s.status !== "past";
     if (filter === "Past") return s.status === "past";
@@ -370,7 +384,12 @@ export default function ServicesSection({ church, songs, services, members, curr
         />
       )}
       {stageService && (
-        <StageMode service={stageService} songs={songs} onClose={() => setStageService(null)} />
+        <StageMode
+          service={stageService}
+          songs={songs}
+          onClose={() => setStageService(null)}
+          onSaveArrangement={saveArrangement}
+        />
       )}
     </div>
   );
