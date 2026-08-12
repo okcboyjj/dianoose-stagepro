@@ -327,7 +327,9 @@ export default function ServicesSection({ church, songs, services, members, curr
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <div className="w-16 h-16 rounded-2xl bg-secondary border border-border flex items-center justify-center mb-4"><List className="w-7 h-7 text-muted-foreground" /></div>
           <p className="text-foreground font-semibold mb-1">No services yet</p>
-          <p className="text-sm text-muted-foreground">Click "+ New Service" to plan your first service.</p>
+          <p className="text-sm text-muted-foreground">
+            {isAdmin ? 'Click "+ New Service" to plan your first service.' : "No services have been scheduled yet."}
+          </p>
         </div>
       ) : (
         <div className="grid gap-3">
