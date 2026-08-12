@@ -5,11 +5,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, X, Loader2, Music, List, Save, Trash2, Calendar } from "lucide-react";
+import { Plus, X, Loader2, Music, List, Save, Trash2, Calendar, Presentation } from "lucide-react";
 import MobileSelect from "@/components/ui/MobileSelect";
 import ServiceRosterPanel from "./service/ServiceRosterPanel";
 import ServiceAssignmentPanel from "./service/ServiceAssignmentPanel";
 import SongSuggestionsPanel from "./service/SongSuggestionsPanel";
+import StageMode from "./service/StageMode";
 
 const ServiceEntity = base44.entities.Service;
 
@@ -280,6 +281,7 @@ export default function ServicesSection({ church, songs, services, members, curr
   const [filter, setFilter] = useState("All");
   const [showNew, setShowNew] = useState(false);
   const [selectedService, setSelectedService] = useState(null);
+  const [stageService, setStageService] = useState(null);
 
   const filtered = services.filter(s => {
     if (filter === "Upcoming") return s.status !== "past";
@@ -334,6 +336,15 @@ export default function ServicesSection({ church, songs, services, members, curr
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                  {songCount > 0 && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setStageService(service); }}
+                      title="Open Stage Mode (hands-free charts)"
+                      className="flex items-center gap-1.5 text-xs bg-primary/10 border border-primary/30 text-primary rounded-lg px-2.5 py-1 font-bold hover:bg-primary hover:text-primary-foreground transition-colors"
+                    >
+                      <Presentation className="w-3.5 h-3.5" /> Stage
+                    </button>
+                  )}
                   <span className="text-xs bg-secondary border border-border/50 text-muted-foreground rounded-lg px-2.5 py-1 font-medium">{songCount} song{songCount !== 1 ? "s" : ""}</span>
                   {pendingSuggestions > 0 && (
                     <span className="text-xs bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 rounded-lg px-2.5 py-1 font-medium">{pendingSuggestions} suggestion{pendingSuggestions !== 1 ? "s" : ""}</span>
@@ -357,6 +368,9 @@ export default function ServicesSection({ church, songs, services, members, curr
           onClose={() => setSelectedService(null)}
           onSave={() => { setSelectedService(null); onRefresh(); }}
         />
+      )}
+      {stageService && (
+        <StageMode service={stageService} songs={songs} onClose={() => setStageService(null)} />
       )}
     </div>
   );
