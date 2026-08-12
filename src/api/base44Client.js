@@ -3,6 +3,7 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signInWithPopup,
+  browserPopupRedirectResolver,
   signInWithCredential,
   signOut,
   deleteUser,
@@ -121,7 +122,9 @@ export const base44 = {
         const cred = await signInWithCredential(auth, credential);
         return { user: shimUser(cred.user) };
       }
-      const cred = await signInWithPopup(auth, googleProvider);
+      // The auth instance has no default popupRedirectResolver (omitted to fix a Capacitor
+      // native hang), so pass the browser resolver explicitly for the web popup flow.
+      const cred = await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
       return { user: shimUser(cred.user) };
     },
 
@@ -136,7 +139,7 @@ export const base44 = {
         const cred = await signInWithCredential(auth, credential);
         return { user: shimUser(cred.user) };
       }
-      const cred = await signInWithPopup(auth, appleProvider);
+      const cred = await signInWithPopup(auth, appleProvider, browserPopupRedirectResolver);
       return { user: shimUser(cred.user) };
     },
 
