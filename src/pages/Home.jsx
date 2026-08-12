@@ -164,16 +164,21 @@ const GlobalStyles = () => (
 // ─── Animated scroll reveal ───────────────────────────────────────────────────
 const AnimatedElement = ({ children, className = "", delay = 0 }) => {
   const [isVisible, setIsVisible] = useState(false);
+  const [settled, setSettled] = useState(false);
   useEffect(() => {
-    const timer = setTimeout(() => setIsVisible(true), delay || 30);
-    return () => clearTimeout(timer);
+    const t1 = setTimeout(() => setIsVisible(true), delay || 30);
+    // Once the entrance animation finishes, drop the transform entirely. A lingering
+    // non-none transform makes this a containing block for position:fixed descendants,
+    // which traps modals/overlays inside the content area instead of the viewport.
+    const t2 = setTimeout(() => setSettled(true), (delay || 30) + 500);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [delay]);
   return (
     <div
       className={`${className}`}
       style={{
         opacity: isVisible ? 1 : 0,
-        transform: isVisible ? "translateY(0px)" : "translateY(18px)",
+        transform: settled ? "none" : (isVisible ? "translateY(0px)" : "translateY(18px)"),
         transition: `opacity 0.45s cubic-bezier(0.22,1,0.36,1) ${delay}ms, transform 0.45s cubic-bezier(0.22,1,0.36,1) ${delay}ms`,
       }}
     >
