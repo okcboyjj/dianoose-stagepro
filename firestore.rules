@@ -50,7 +50,10 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/churches/$(request.resource.data.church_id));
       allow update: if isSignedIn()
         && (memberId == request.auth.uid || isChurchAdmin(resource.data.church_id));
-      allow delete: if isChurchAdmin(resource.data.church_id);
+      // A user can delete their OWN membership (required for in-app account deletion,
+      // App Store Guideline 5.1.1(v)); admins can remove any member.
+      allow delete: if isSignedIn()
+        && (memberId == request.auth.uid || isChurchAdmin(resource.data.church_id));
     }
 
     match /teamInvites/{inviteId} {
