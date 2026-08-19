@@ -11,8 +11,10 @@ let package = Package(
             targets: ["CapApp-SPM"])
     ],
     dependencies: [
-        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.4.1"),
-        .package(name: "CapacitorFirebaseAuthentication", path: "../../../node_modules/@capacitor-firebase/authentication")
+        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.0"),
+        .package(name: "CapacitorFirebaseAnalytics", path: "../../../node_modules/@capacitor-firebase/analytics"),
+        .package(name: "CapacitorFirebaseAuthentication", path: "../../../node_modules/@capacitor-firebase/authentication"),
+        .package(name: "CapacitorFirebaseCrashlytics", path: "../../../node_modules/@capacitor-firebase/crashlytics")
     ],
     targets: [
         .target(
@@ -20,7 +22,9 @@ let package = Package(
             dependencies: [
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
-                .product(name: "CapacitorFirebaseAuthentication", package: "CapacitorFirebaseAuthentication")
+                .product(name: "CapacitorFirebaseAnalytics", package: "CapacitorFirebaseAnalytics"),
+                .product(name: "CapacitorFirebaseAuthentication", package: "CapacitorFirebaseAuthentication"),
+                .product(name: "CapacitorFirebaseCrashlytics", package: "CapacitorFirebaseCrashlytics")
             ]
         )
     ]
