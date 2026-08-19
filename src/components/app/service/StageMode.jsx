@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Type, Settings, Play, Pause } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Type, Settings, Play, Pause, Radio } from "lucide-react";
 import { transposeFullChart, ALL_KEYS, suggestCapo } from "../song/ChordTransposer";
+import { base44 } from "@/api/base44Client";
+import { track } from "@/lib/firebase";
 
 // ── Chart line classification (kept in sync with ChartViewer) ───────────────────────────
 const CHORD_TOKEN = /^[A-G][b#]?(?:maj7|maj|min7|m7|m|sus4|sus2|sus|add9|add2|dim7|dim|aug|7|9|11|13)?(?:\/[A-G][b#]?)?$/;
@@ -45,9 +47,13 @@ function ChordLine({ line, fontSize }) {
 const NEXT_DEFAULT = ["ArrowRight", "ArrowDown", "PageDown", "Space"];
 const PREV_DEFAULT = ["ArrowLeft", "ArrowUp", "PageUp"];
 
-export default function StageMode({ service, songs, onClose, onSaveArrangement }) {
-  // Resolve the setlist in order.
-  const setlist = (service?.songs || []).map(id => songs.find(s => s.id === id)).filter(Boolean);
+export default function StageMode({ service, songs, currentUser, onClose, onSaveArrangement }) {
+  // Resolve the setlist in order. Memoized so downstream callbacks (writeSession, the sync
+  // heartbeat) keep a stable identity across the 15s staleness re-renders.
+  const setlist = useMemo(
+    () => (service?.songs || []).map(id => songs.find(s => s.id === id)).filter(Boolean),
+    [service?.songs, songs]
+  );
 
   // Per-service arrangement (key/tempo/notes decided at practice), keyed by song id.
   const arrangements = service?.arrangements || {};
@@ -96,6 +102,93 @@ export default function StageMode({ service, songs, onClose, onSaveArrangement }
     return { ...m, [song.id]: v };
   });
 
+  // ── Sunday Sync ───────────────────────────────────────────────────────────────────────
+  // One person taps "Go Live" and becomes the leader; a `liveSession` object is written onto
+  // the service doc. Everyone else with Stage Mode open subscribes and their screen follows
+  // the leader's current song. A heartbeat keeps the session fresh so a closed-tab leader's
+  // session auto-expires (staleness) instead of stranding followers.
+  const STALE_MS = 90000;
+  const myId = currentUser?.id;
+  const myName = currentUser?.first_name || (currentUser?.full_name || "").split(" ")[0] || "Leader";
+  const [liveSession, setLiveSession] = useState(() => service?.liveSession || null);
+  const [leftSync, setLeftSync] = useState(false);        // follower opted out locally
+  const [nowTick, setNowTick] = useState(() => Date.now()); // re-evaluates staleness over time
+  const firstBroadcast = useRef(true);
+
+  const leaderName = liveSession?.leaderName || "Leader";
+  const sessionFresh = !!liveSession?.active && (nowTick - (liveSession.at || 0) < STALE_MS);
+  const isLeader = sessionFresh && liveSession.leaderId === myId;
+  const someoneElseLive = sessionFresh && liveSession.leaderId !== myId;
+  const following = someoneElseLive && !leftSync;
+  const followingRef = useRef(following);
+  useEffect(() => { followingRef.current = following; }, [following]);
+
+  // Broadcast the leader's current position (also used as the heartbeat).
+  const writeSession = useCallback((extra) => {
+    if (!myId || !service?.id) return;
+    const s = { active: true, leaderId: myId, leaderName: myName, songId: setlist[index]?.id || null, at: Date.now(), ...extra };
+    setLiveSession(s);
+    base44.entities.Service.update(service.id, { liveSession: s }).catch(() => {});
+  }, [myId, myName, service?.id, setlist, index]);
+
+  const goLive = () => { firstBroadcast.current = false; writeSession(); track("stage_sync_started", { songs: setlist.length }); };
+  const endLive = () => {
+    if (!service?.id) return;
+    const s = { active: false, leaderId: myId, leaderName: "", songId: null, at: Date.now() };
+    setLiveSession(s);
+    base44.entities.Service.update(service.id, { liveSession: s }).catch(() => {});
+  };
+
+  // Subscribe to this service's live-session state (scoped by church, filtered to our id).
+  useEffect(() => {
+    if (!service?.church_id || !service?.id) return;
+    const unsub = base44.entities.Service.subscribe({ church_id: service.church_id }, (c) => {
+      if (c.id !== service.id || c.type === "delete") return;
+      setLiveSession(c.data?.liveSession || null);
+    });
+    return () => unsub();
+  }, [service?.id, service?.church_id]);
+
+  // Keep staleness fresh even when no updates arrive.
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  // A brand-new session (new leader, or re-activated) clears any prior local opt-out so
+  // followers auto-join. Heartbeats (which only change `at`) don't retrigger this.
+  useEffect(() => {
+    if (liveSession?.active) setLeftSync(false);
+  }, [liveSession?.leaderId, liveSession?.active]);
+
+  // Follower: mirror the leader's current song.
+  useEffect(() => {
+    if (!following) return;
+    const i = setlist.findIndex(s => s.id === liveSession?.songId);
+    if (i >= 0) setIndex(i);
+  }, [following, liveSession?.songId]);
+
+  // Leader: broadcast on song change (skip the mount fire) + heartbeat while live.
+  useEffect(() => {
+    if (!isLeader) return;
+    if (firstBroadcast.current) { firstBroadcast.current = false; return; }
+    writeSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index]);
+  useEffect(() => {
+    if (!isLeader) return;
+    const id = setInterval(() => writeSession(), 25000);
+    return () => clearInterval(id);
+  }, [isLeader, writeSession]);
+
+  // Manual navigation while following = take local control (leave sync).
+  const gotoIndex = (i) => {
+    if (following) setLeftSync(true);
+    setIndex(Math.max(0, Math.min(setlist.length - 1, i)));
+  };
+  const userNext = () => gotoIndex(index + 1);
+  const userPrev = () => gotoIndex(index - 1);
+
   // Reset scroll + reseed arrangement drafts when the song changes.
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
@@ -132,8 +225,8 @@ export default function StageMode({ service, songs, onClose, onSaveArrangement }
         setLearning(null);
         return;
       }
-      if (nextKeys.includes(code)) { e.preventDefault(); next(); flashControls(); }
-      else if (prevKeys.includes(code)) { e.preventDefault(); prev(); flashControls(); }
+      if (nextKeys.includes(code)) { e.preventDefault(); if (followingRef.current) setLeftSync(true); next(); flashControls(); }
+      else if (prevKeys.includes(code)) { e.preventDefault(); if (followingRef.current) setLeftSync(true); prev(); flashControls(); }
       else if (code === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
@@ -163,7 +256,7 @@ export default function StageMode({ service, songs, onClose, onSaveArrangement }
   const onTouchEnd = (e) => {
     if (touchStart.current == null) return;
     const dx = e.changedTouches[0].clientX - touchStart.current;
-    if (Math.abs(dx) > 70) (dx < 0 ? next() : prev());
+    if (Math.abs(dx) > 70) (dx < 0 ? userNext() : userPrev());
     touchStart.current = null;
   };
 
@@ -204,6 +297,26 @@ export default function StageMode({ service, songs, onClose, onSaveArrangement }
           <div className="text-xs text-white/50">{song?.artist}</div>
         </div>
         <div className="flex-1" />
+        {/* Sunday Sync — lead everyone's screens, or follow the leader */}
+        {myId && (
+          isLeader ? (
+            <button onClick={endLive} title="You're leading — tap to end" className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold bg-red-500/90 hover:bg-red-500 text-white">
+              <span className="w-2 h-2 rounded-full bg-white animate-pulse" /> LIVE
+            </button>
+          ) : following ? (
+            <button onClick={() => setLeftSync(true)} title={`Following ${leaderName} — tap to browse on your own`} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 hover:bg-emerald-500/30">
+              <Radio className="w-3.5 h-3.5" /> Following {leaderName}
+            </button>
+          ) : someoneElseLive ? (
+            <button onClick={() => setLeftSync(false)} title={`${leaderName} is leading — tap to follow`} className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold bg-amber-500/20 border border-amber-400/40 text-amber-300 hover:bg-amber-500/30">
+              <Radio className="w-3.5 h-3.5" /> Rejoin {leaderName}
+            </button>
+          ) : (
+            <button onClick={goLive} title="Lead everyone's screens" className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold bg-white/10 hover:bg-white/20 text-white/80">
+              <Radio className="w-3.5 h-3.5" /> Go Live
+            </button>
+          )
+        )}
         {/* Key + capo + transpose */}
         <div className="flex items-center gap-1 bg-white/10 rounded-lg px-2 py-1">
           <button onClick={() => transpose(-1)} className="w-7 h-7 rounded font-bold hover:bg-white/10">−</button>
@@ -220,6 +333,14 @@ export default function StageMode({ service, songs, onClose, onSaveArrangement }
         <button onClick={() => setShowSettings(true)} className="w-9 h-9 flex items-center justify-center rounded-lg bg-white/10 hover:bg-white/20"><Settings className="w-4 h-4" /></button>
       </div>
 
+      {/* Persistent sync indicator (stays visible after the controls auto-hide) */}
+      {(isLeader || following) && !showControls && (
+        <div className={`absolute top-3 right-4 z-20 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold pointer-events-none ${isLeader ? "bg-red-500/90 text-white" : "bg-emerald-500/25 text-emerald-200 border border-emerald-400/40"}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${isLeader ? "bg-white animate-pulse" : "bg-emerald-300"}`} />
+          {isLeader ? "LIVE" : `Following ${leaderName}`}
+        </div>
+      )}
+
       {/* Chart */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-6" style={{ WebkitOverflowScrolling: "touch" }}>
         {notes && (
@@ -234,16 +355,16 @@ export default function StageMode({ service, songs, onClose, onSaveArrangement }
 
       {/* Bottom nav + setlist position */}
       <div className={`flex items-center gap-3 px-5 py-3 border-t border-white/10 transition-opacity duration-300 ${showControls ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
-        <button onClick={prev} disabled={index === 0} className="w-12 h-12 flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-30"><ChevronLeft className="w-7 h-7" /></button>
+        <button onClick={userPrev} disabled={index === 0} className="w-12 h-12 flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-30"><ChevronLeft className="w-7 h-7" /></button>
         <div className="flex-1 flex items-center gap-1.5 overflow-x-auto">
           {setlist.map((s, i) => (
-            <button key={s.id} onClick={() => setIndex(i)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${i === index ? "bg-[#6C63FF] text-white" : "bg-white/10 text-white/50 hover:text-white"}`}>
+            <button key={s.id} onClick={() => gotoIndex(i)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${i === index ? "bg-[#6C63FF] text-white" : "bg-white/10 text-white/50 hover:text-white"}`}>
               {i + 1}. {s.title}
             </button>
           ))}
         </div>
         <div className="text-sm text-white/50 font-mono">{index + 1}/{setlist.length}</div>
-        <button onClick={next} disabled={index === setlist.length - 1} className="w-12 h-12 flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-30"><ChevronRight className="w-7 h-7" /></button>
+        <button onClick={userNext} disabled={index === setlist.length - 1} className="w-12 h-12 flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-30"><ChevronRight className="w-7 h-7" /></button>
       </div>
 
       {/* Settings / footswitch learn */}

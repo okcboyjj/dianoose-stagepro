@@ -391,6 +391,7 @@ export default function ServicesSection({ church, songs, services, members, curr
         <StageMode
           service={stageService}
           songs={songs}
+          currentUser={currentUser}
           onClose={() => setStageService(null)}
           onSaveArrangement={saveArrangement}
         />
