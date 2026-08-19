@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Type, Settings, Play, Pause, Radio } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Type, Settings, Play, Pause, Radio, Drum } from "lucide-react";
 import { transposeFullChart, ALL_KEYS, suggestCapo } from "../song/ChordTransposer";
 import { base44 } from "@/api/base44Client";
 import { track } from "@/lib/firebase";
+import { Metronome } from "@/lib/metronome";
 
 // ── Chart line classification (kept in sync with ChartViewer) ───────────────────────────
 const CHORD_TOKEN = /^[A-G][b#]?(?:maj7|maj|min7|m7|m|sus4|sus2|sus|add9|add2|dim7|dim|aug|7|9|11|13)?(?:\/[A-G][b#]?)?$/;
@@ -123,15 +124,22 @@ export default function StageMode({ service, songs, currentUser, onClose, onSave
   const followingRef = useRef(following);
   useEffect(() => { followingRef.current = following; }, [following]);
 
-  // Broadcast the leader's current position (also used as the heartbeat).
+  const currentSection = useRef(0); // leader's current section index within the song
+
+  // Broadcast the leader's current position (song + section; also used as the heartbeat).
   const writeSession = useCallback((extra) => {
     if (!myId || !service?.id) return;
-    const s = { active: true, leaderId: myId, leaderName: myName, songId: setlist[index]?.id || null, at: Date.now(), ...extra };
+    const s = {
+      active: true, leaderId: myId, leaderName: myName,
+      songId: setlist[index]?.id || null,
+      sectionIndex: Math.max(0, currentSection.current),
+      at: Date.now(), ...extra,
+    };
     setLiveSession(s);
     base44.entities.Service.update(service.id, { liveSession: s }).catch(() => {});
   }, [myId, myName, service?.id, setlist, index]);
 
-  const goLive = () => { firstBroadcast.current = false; writeSession(); track("stage_sync_started", { songs: setlist.length }); };
+  const goLive = () => { firstBroadcast.current = false; currentSection.current = 0; writeSession({ sectionIndex: 0 }); track("stage_sync_started", { songs: setlist.length }); };
   const endLive = () => {
     if (!service?.id) return;
     const s = { active: false, leaderId: myId, leaderName: "", songId: null, at: Date.now() };
@@ -172,7 +180,8 @@ export default function StageMode({ service, songs, currentUser, onClose, onSave
   useEffect(() => {
     if (!isLeader) return;
     if (firstBroadcast.current) { firstBroadcast.current = false; return; }
-    writeSession();
+    currentSection.current = 0;               // new song starts at its first section
+    writeSession({ sectionIndex: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index]);
   useEffect(() => {
@@ -188,6 +197,70 @@ export default function StageMode({ service, songs, currentUser, onClose, onSave
   };
   const userNext = () => gotoIndex(index + 1);
   const userPrev = () => gotoIndex(index - 1);
+
+  // ── Section-level sync ──────────────────────────────────────────────────────────────────
+  // Section headers register their DOM nodes here (by section index) as the chart renders.
+  // The leader broadcasts whichever section is scrolled to the top; followers scroll to match.
+  // Anchoring on section headers (not pixels) keeps it correct across font sizes / screen sizes.
+  const sectionEls = useRef([]);
+  const scrollRaf = useRef(0);
+
+  const onChartScroll = () => {
+    if (!isLeader) return;                 // only the leader broadcasts section position
+    if (scrollRaf.current) return;
+    scrollRaf.current = requestAnimationFrame(() => {
+      scrollRaf.current = 0;
+      const cont = scrollRef.current;
+      if (!cont) return;
+      const contTop = cont.getBoundingClientRect().top;
+      let si = 0;
+      for (let i = 0; i < sectionEls.current.length; i++) {
+        const el = sectionEls.current[i];
+        if (el && el.getBoundingClientRect().top - contTop <= 8) si = i; else break;
+      }
+      if (si !== currentSection.current) {
+        currentSection.current = si;
+        writeSession({ sectionIndex: si });   // fires only when crossing a section boundary
+      }
+    });
+  };
+
+  // Follower: scroll the leader's current section header to the top.
+  useEffect(() => {
+    if (!following) return;
+    const si = liveSession?.sectionIndex;
+    if (typeof si !== "number") return;
+    const el = sectionEls.current[si];
+    const cont = scrollRef.current;
+    if (el && cont) {
+      const offset = el.getBoundingClientRect().top - cont.getBoundingClientRect().top;
+      cont.scrollTop += offset - 12;
+    }
+  }, [following, liveSession?.sectionIndex, liveSession?.songId, index]);
+
+  // ── Click track (local metronome, per device) ──────────────────────────────────────────
+  const metroRef = useRef(null);
+  const [clickOn, setClickOn] = useState(false);
+  const [beat, setBeat] = useState(-1);
+  const clickBpm = bpm || 90;
+
+  useEffect(() => {
+    metroRef.current = new Metronome((b) => setBeat(b));
+    return () => { metroRef.current?.dispose(); metroRef.current = null; };
+  }, []);
+  const toggleClick = () => {
+    const m = metroRef.current;
+    if (!m) return;
+    if (clickOn) { m.stop(); setClickOn(false); setBeat(-1); }
+    else { m.start(clickBpm, 4); setClickOn(true); track("stage_click_started", { bpm: clickBpm }); }
+  };
+  // Follow tempo edits live without restarting the click…
+  useEffect(() => { if (clickOn) metroRef.current?.setBpm(clickBpm); }, [clickBpm, clickOn]);
+  // …but restart the bar count on song change so the accent lands on the new downbeat.
+  useEffect(() => {
+    if (clickOn) metroRef.current?.start(clickBpm, 4);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index]);
 
   // Reset scroll + reseed arrangement drafts when the song changes.
   useEffect(() => {
@@ -264,8 +337,14 @@ export default function StageMode({ service, songs, currentUser, onClose, onSave
 
   const renderChart = () => {
     if (!chart) return <p className="text-white/40 text-xl italic">No chart for this song.</p>;
+    sectionEls.current.length = 0; // rebuilt each render; section headers re-register below
+    let si = -1;
     return chart.split("\n").map((line, i) => {
-      if (isSectionHeader(line)) return <p key={i} className="text-[#8B80FF] font-extrabold uppercase tracking-wide mt-6 mb-1" style={{ fontSize: fontSize * 0.8 }}>{line.replace(/[[\]]/g, "")}</p>;
+      if (isSectionHeader(line)) {
+        si += 1;
+        const myIdx = si;
+        return <p key={i} ref={el => { if (el) sectionEls.current[myIdx] = el; }} className="text-[#8B80FF] font-extrabold uppercase tracking-wide mt-6 mb-1" style={{ fontSize: fontSize * 0.8 }}>{line.replace(/[[\]]/g, "")}</p>;
+      }
       if (line.trim() === "") return <div key={i} style={{ height: fontSize * 0.6 }} />;
       if (isChordLine(line)) return <ChordLine key={i} line={line} fontSize={fontSize} />;
       return <div key={i} style={{ fontSize, fontFamily: "monospace", whiteSpace: "pre", lineHeight: 1.5 }} className="text-white/70">{line}</div>;
@@ -325,6 +404,13 @@ export default function StageMode({ service, songs, currentUser, onClose, onSave
         </div>
         {capo > 0 && <span className="text-xs font-mono bg-[#6C63FF]/20 text-[#8B80FF] px-2 py-1 rounded-lg">CAPO {capo}</span>}
         {bpm && <span className="text-xs font-mono bg-white/10 px-2 py-1 rounded-lg">{bpm} BPM</span>}
+        {/* Click track (local metronome) */}
+        <button onClick={toggleClick} title={`Click track — ${clickBpm} BPM`} className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold ${clickOn ? "bg-[#6C63FF] text-white" : "bg-white/10 hover:bg-white/20 text-white/80"}`}>
+          <Drum className="w-3.5 h-3.5" />
+          {clickOn
+            ? <span className="flex items-center gap-0.5">{[0, 1, 2, 3].map(b => <span key={b} className={`w-1.5 h-1.5 rounded-full transition-colors ${beat === b ? "bg-white" : "bg-white/30"}`} />)}</span>
+            : <span className="font-mono">{clickBpm}</span>}
+        </button>
         <div className="flex items-center gap-1 bg-white/10 rounded-lg px-1">
           <button onClick={() => changeFont(-2)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10"><Type className="w-3 h-3" /></button>
           <button onClick={() => changeFont(2)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10"><Type className="w-5 h-5" /></button>
@@ -342,7 +428,7 @@ export default function StageMode({ service, songs, currentUser, onClose, onSave
       )}
 
       {/* Chart */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-6" style={{ WebkitOverflowScrolling: "touch" }}>
+      <div ref={scrollRef} onScroll={onChartScroll} className="flex-1 overflow-y-auto px-8 py-6" style={{ WebkitOverflowScrolling: "touch" }}>
         {notes && (
           <div className="mb-4 flex items-start gap-2 bg-[#6C63FF]/12 border border-[#6C63FF]/30 rounded-xl px-4 py-2.5">
             <span className="text-[10px] font-bold uppercase tracking-wider text-[#8B80FF] mt-0.5">Notes</span>
