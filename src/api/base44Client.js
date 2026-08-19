@@ -1,4 +1,4 @@
-import { auth, db, storage, googleProvider, appleProvider } from "@/lib/firebase";
+import { auth, db, storage, googleProvider, appleProvider, track } from "@/lib/firebase";
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -87,6 +87,7 @@ export const base44 = {
     async register({ email, password }) {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       await httpsCallable(functions, "sendAuthEmail")({ type: "verify", email });
+      track("sign_up", { method: "email" });
       return { user: shimUser(cred.user) };
     },
 
@@ -103,6 +104,7 @@ export const base44 = {
 
     async loginViaEmailPassword(email, password) {
       const cred = await signInWithEmailAndPassword(auth, email, password);
+      track("login", { method: "email" });
       return { user: shimUser(cred.user) };
     },
 
@@ -120,11 +122,13 @@ export const base44 = {
           result.credential?.accessToken
         );
         const cred = await signInWithCredential(auth, credential);
+        track("login", { method: "google" });
         return { user: shimUser(cred.user) };
       }
       // The auth instance has no default popupRedirectResolver (omitted to fix a Capacitor
       // native hang), so pass the browser resolver explicitly for the web popup flow.
       const cred = await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
+      track("login", { method: "google" });
       return { user: shimUser(cred.user) };
     },
 
@@ -137,9 +141,11 @@ export const base44 = {
           rawNonce: result.credential?.nonce,
         });
         const cred = await signInWithCredential(auth, credential);
+        track("login", { method: "apple" });
         return { user: shimUser(cred.user) };
       }
       const cred = await signInWithPopup(auth, appleProvider, browserPopupRedirectResolver);
+      track("login", { method: "apple" });
       return { user: shimUser(cred.user) };
     },
 

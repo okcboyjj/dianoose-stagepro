@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { base44 } from "@/api/base44Client";
+import { track } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,6 +29,7 @@ function NewServiceModal({ churchId, onClose, onSave }) {
       ...form, church_id: churchId, status: "upcoming",
       songs: [], musicians: [], role_assignments: [], song_suggestions: []
     });
+    track("service_created");
     setSaving(false);
     onSave();
   };
@@ -354,7 +356,7 @@ export default function ServicesSection({ church, songs, services, members, curr
                 <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                   {songCount > 0 && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); setStageService(service); }}
+                      onClick={(e) => { e.stopPropagation(); track("stage_mode_opened", { songs: songCount }); setStageService(service); }}
                       title="Open Stage Mode (hands-free charts)"
                       className="flex items-center gap-1.5 text-xs bg-primary/10 border border-primary/30 text-primary rounded-lg px-2.5 py-1 font-bold hover:bg-primary hover:text-primary-foreground transition-colors"
                     >
